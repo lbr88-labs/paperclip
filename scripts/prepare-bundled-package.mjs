@@ -7,9 +7,15 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 
-export function materializePublishManifest(pkg) {
+export function materializePublishManifest(pkg, sourceRoot = repoRoot) {
   const publishConfig = pkg.publishConfig ?? {};
   const publishManifest = { ...pkg };
+  const releaseManifest = resolve(sourceRoot, "scripts/release-package-manifest.json");
+  const workspaceDirectories = new Map(
+    existsSync(releaseManifest)
+      ? JSON.parse(readFileSync(releaseManifest, "utf8")).map(({ name, dir }) => [name, dir])
+      : [],
+  );
 
   for (const key of ["main", "types", "exports", "bin"]) {
     if (publishConfig[key] !== undefined) publishManifest[key] = publishConfig[key];
@@ -22,7 +28,11 @@ export function materializePublishManifest(pkg) {
         if (typeof specifier !== "string" || !specifier.startsWith("workspace:")) return [name, specifier];
         const range = specifier.slice("workspace:".length);
         const prefix = range === "^" || range === "~" ? range : "";
-        return [name, `${prefix}${pkg.version}`];
+        const directory = workspaceDirectories.get(name);
+        const version = directory
+          ? JSON.parse(readFileSync(resolve(sourceRoot, directory, "package.json"), "utf8")).version
+          : pkg.version;
+        return [name, `${prefix}${version}`];
       }),
     );
   }
@@ -156,7 +166,7 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
   }
 
   const deployedPackagePath = resolve(destinationDir, "package.json");
-  const publishManifest = materializePublishManifest(sourcePackage);
+  const publishManifest = materializePublishManifest(sourcePackage, sourceRoot);
   const installManifest = createBundledInstallManifest(publishManifest, bundledDependencies);
   writeFileSync(deployedPackagePath, `${JSON.stringify(installManifest, null, 2)}\n`);
 
