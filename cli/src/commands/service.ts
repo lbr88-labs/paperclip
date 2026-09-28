@@ -6,6 +6,7 @@ import { readConfig, resolveConfigPath } from "../config/store.js";
 import { resolvePaperclipInstanceId, resolvePaperclipInstanceRoot } from "../config/home.js";
 import { detectServiceManager, type ServiceManager, type ServiceStatus } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
+import { reportedVersionForPid } from "../utils/restart-report.js";
 
 type CommonOptions = { instance?: string; json?: boolean };
 type HealthResult = { ok: boolean; serverVersion: string | null; error?: string };
@@ -157,8 +158,16 @@ export async function restartManagedService(input: { instanceId?: string; expect
     const before = await detection.manager.status();
     const intent = await writeHotRestartIntent(before, instanceId, input.waitForDrain ?? false);
     await detection.manager.restart();
-    const health = await waitForHealth(instanceId, resolveRestartExpectedVersion(input.expectedVersion));
-    return { status: await detection.manager.status(), health, report: await waitForRestartReport(instanceId, intent.requestedAt) };
+    const health = await waitForHealth(instanceId, null);
+    const status = await detection.manager.status();
+    const report = await waitForRestartReport(instanceId, intent.requestedAt);
+    if (input.expectedVersion) {
+      const actualVersion = reportedVersionForPid(report, status.pid);
+      if (!status.active || actualVersion !== input.expectedVersion) {
+        throw new Error(`Paperclip service did not restart at version ${input.expectedVersion}: reported ${actualVersion ?? "no matching process/version receipt"}`);
+      }
+    }
+    return { status, health, report };
   });
 }
 

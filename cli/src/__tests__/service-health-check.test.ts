@@ -13,6 +13,8 @@ import {
 import { resolveRestartExpectedVersion, withHotRestartLock } from "../commands/service.js";
 import type { PaperclipConfig } from "../config/schema.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
+import { resolveInstallStorePaths } from "../install-store.js";
+import { reportedVersionForPid } from "../utils/restart-report.js";
 
 const config = {
   server: { host: "127.0.0.1", port: 3100 },
@@ -147,6 +149,42 @@ describe("service health doctor checks", () => {
         message: expect.stringContaining("another Paperclip process"),
       }),
     );
+  });
+  it("trusts a restart receipt only for the healthy service's current PID", async () => {
+    const manager = managerFixture();
+    const manifestPath = resolveInstallStorePaths().manifestPath;
+    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      schemaVersion: 1, source: "git", version: "0.3.1", payloadPath: "/tmp/fork", previous: [],
+    }));
+    const reportPath = path.join(process.env.PAPERCLIP_HOME!, "instances", "default", "hot-restart-report.json");
+    fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+    fs.writeFileSync(reportPath, JSON.stringify({ newServerPid: 123, newServerVersion: "0.3.1" }));
+    const deps = {
+      detect: vi.fn(async () => ({ supported: true as const, manager })),
+      probe: vi.fn(async () => ({ ok: true, version: null })),
+    };
+
+    const current = await serviceHealthChecks(config, deps);
+    expect(current).toContainEqual(expect.objectContaining({
+      name: "Service health", status: "pass", message: "Healthy at version 0.3.1",
+    }));
+
+    fs.writeFileSync(reportPath, JSON.stringify({ newServerPid: 122, newServerVersion: "0.3.1" }));
+    const stale = await serviceHealthChecks(config, deps);
+    expect(stale).toContainEqual(expect.objectContaining({ name: "Service version", status: "warn" }));
+
+    fs.writeFileSync(reportPath, JSON.stringify({ newServerPid: 123, newServerVersion: "0.3.0" }));
+    const outdated = await serviceHealthChecks(config, deps);
+    expect(outdated).toContainEqual(expect.objectContaining({
+      name: "Service version", status: "fail", message: "Running 0.3.0; managed install is 0.3.1",
+    }));
+  });
+
+  it("rejects restart version receipts from a different process", () => {
+    expect(reportedVersionForPid({ newServerPid: 123, newServerVersion: "0.3.1" }, 123)).toBe("0.3.1");
+    expect(reportedVersionForPid({ newServerPid: 123, newServerVersion: "0.3.1" }, 122)).toBeNull();
+    expect(reportedVersionForPid({ newServerPid: 123, newServerVersion: "" }, 123)).toBeNull();
   });
 });
 
