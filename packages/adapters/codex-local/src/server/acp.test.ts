@@ -482,6 +482,33 @@ describe("codex_local ACP lane", () => {
       env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" },
     });
   });
+  it("selects unrestricted ACP mode for a bypass agent without disabling the mode for other agents", () => {
+    const unrestricted = buildCodexAcpConfig({ dangerouslyBypassApprovalsAndSandbox: true });
+    expect(unrestricted.env).toMatchObject({
+      INITIAL_AGENT_MODE: "agent-full-access",
+      PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "true",
+    });
+    expect(buildCodexAcpConfig({ dangerouslyBypassApprovalsAndSandbox: false }).env)
+      .not.toHaveProperty("INITIAL_AGENT_MODE");
+    expect(buildCodexAcpConfig({ dangerouslyBypassSandbox: true }).env)
+      .toHaveProperty("INITIAL_AGENT_MODE", "agent-full-access");
+  });
+
+  it("respects explicit ACP mode and network restrictions over the bypass setting", () => {
+    const bypass = { dangerouslyBypassApprovalsAndSandbox: true };
+    expect(buildCodexAcpConfig({
+      ...bypass,
+      env: { INITIAL_AGENT_MODE: "agent" },
+    }).env).toHaveProperty("INITIAL_AGENT_MODE", "agent");
+    expect(buildCodexAcpConfig({
+      ...bypass,
+      env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" },
+    }).env).not.toHaveProperty("INITIAL_AGENT_MODE");
+    expect(buildCodexAcpConfig({
+      ...bypass,
+      extraArgs: ["-c", "sandbox_workspace_write.network_access=false"],
+    }).env).not.toHaveProperty("INITIAL_AGENT_MODE");
+  });
 
   it("maps Codex config to the ACPX Codex target", () => {
     expect(buildCodexAcpConfig({

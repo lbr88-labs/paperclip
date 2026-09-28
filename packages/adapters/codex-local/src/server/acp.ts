@@ -147,6 +147,14 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     const match = /^(?:(?:--config=|-c=?)\s*)?sandbox_workspace_write\.network_access\s*=\s*(true|false)\s*$/.exec(arg);
     if (match) networkAccess = match[1] === "true";
   }
+  // The CLI bypass setting must select the equivalent ACP session mode. Without
+  // this, codex-acp starts in its workspace-write preset even for bypass agents.
+  // Explicit ACP mode wins; otherwise network denial keeps the sandboxed mode.
+  const bypass = config.dangerouslyBypassApprovalsAndSandbox === true ||
+    (config.dangerouslyBypassApprovalsAndSandbox == null && config.dangerouslyBypassSandbox === true);
+  if (bypass && networkAccess && env.INITIAL_AGENT_MODE == null) {
+    env.INITIAL_AGENT_MODE = "agent-full-access";
+  }
 
   return {
     ...config,
