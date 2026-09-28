@@ -278,6 +278,12 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     await runCommand("corepack", ["pnpm", "install", "--frozen-lockfile"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("bash", ["scripts/build-npm.sh", "--skip-checks", "--skip-typecheck"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
     await runCommand("corepack", ["pnpm", "-r", "--filter", "@paperclipai/server...", "--if-present", "run", "build"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // The server's build does not produce its static UI; npm prepack normally
+    // does this, but bundled-package staging copies files directly.
+    await runCommand("corepack", ["pnpm", "--filter", "@paperclipai/server", "run", "prepare:ui-dist"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // The published server resolves built-in skills from <pkg>/skills, while
+    // source checkouts keep them at the repository root.
+    fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, "server", "skills"), { recursive: true });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
@@ -287,7 +293,9 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
         await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
-        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
+        // Files are already built in the checkout. The isolated staged package
+        // cannot resolve workspace dependencies if npm re-runs its prepack.
+        await runCommand("npm", ["pack", stagedPackage, "--pack-destination", stagingRoot, "--ignore-scripts"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 16 * 1024 * 1024 });
       } else {
         await runCommand("corepack", ["pnpm", "--dir", workspacePackage.dir, "pack", "--pack-destination", stagingRoot], { cwd: checkoutPath, env: buildEnv({ PAPERCLIP_RELEASE_REUSE_UI_DIST: "1" }), maxBuffer: 32 * 1024 * 1024 });
       }
@@ -300,6 +308,18 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
     }
     await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
+    // npm does not run postinstall for a bundled dependency nested in a staged
+    // tarball. The platform package ships its shared-library symlink manifest
+    // and official hydration script; restore those links before activation.
+    const postgresPlatformPackage = path.join(stagedPayload, "node_modules", "@embedded-postgres", `${process.platform}-${process.arch}`);
+    const symlinkManifest = path.join(postgresPlatformPackage, "native", "pg-symlinks.json");
+    if (fs.existsSync(symlinkManifest)) {
+      await runCommand(process.execPath, [path.join(postgresPlatformPackage, "scripts", "hydrate-symlinks.js")], { cwd: postgresPlatformPackage, maxBuffer: 1024 * 1024 });
+      const links = JSON.parse(fs.readFileSync(symlinkManifest, "utf8")) as Array<{ target: string }>;
+      if (links.some(({ target }) => !fs.existsSync(path.join(postgresPlatformPackage, target)))) {
+        throw new Error("Bundled PostgreSQL native libraries are missing required symlinks.");
+      }
+    }
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
     return { payloadPath, reused: false, version: metadata.version };

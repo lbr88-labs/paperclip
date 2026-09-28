@@ -454,6 +454,22 @@ export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  /**
+   * Inject a queued user message into this exact live run, without cancelling
+   * or starting another run. Resolve only after the provider acknowledges it.
+   * A retry with the same correlationId and message must return the same
+   * turnId without injecting again; a different message for that key must
+   * reject. Invoke onAcknowledged only after provider acknowledgement;
+   * its reconciliation must tolerate a callback retry.
+   */
+  steer?: (input: {
+    runId: string;
+    message: string;
+    correlationId: string;
+    onAcknowledged?: () => Promise<void>;
+  }) => Promise<{ turnId: string }>;
+  /** Report availability for this exact live run; unknown runs fail closed. */
+  getSteeringState?: (runId: string) => "available" | "temporarily_unavailable";
   acp?: AcpTargetDescriptor;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;

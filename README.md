@@ -210,7 +210,7 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 <tr>
 <td width="50%">
 
-**Identity & Access** — Two deployment modes (trusted local or authenticated), board users, agent API keys, short-lived run JWTs, company memberships, invite flows, and OpenClaw onboarding. Every mutating request is traced to an actor.
+**Identity & Access** — Two deployment modes (trusted local or authenticated), board users, agent API keys, short-lived run JWTs, company memberships, invite flows, and OpenClaw onboarding. Every mutating request is traced to an actor. CEO agents inherit company permissions without individual grants; company boundaries, scoped keys, low-trust runs, issue and assignment policies, user inbox consent, and instance-admin controls still apply.
 
 </td>
 <td width="50%">
