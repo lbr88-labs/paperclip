@@ -212,6 +212,11 @@ describe("managed install commands", () => {
       .rejects.toThrow("unsupported workspace dependency");
   });
 
+  it("includes bounded stdout when a build fails without stderr", async () => {
+    await expect(runCommandWithDiagnostics(process.execPath, ["-e", "process.stdout.write('bundle failed: missing peer\\n'); process.exit(1)"]))
+      .rejects.toThrow("bundle failed: missing peer");
+  });
+
   it("installs through the shim, reports provenance, and uninstalls without deleting user data", async () => {
     const version = "2026.720.0";
     const runCommand = vi.fn(async (file: string, args: string[], _options?: unknown) => {
