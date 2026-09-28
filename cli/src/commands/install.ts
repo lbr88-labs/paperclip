@@ -308,6 +308,18 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
       throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
     }
     await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
+    // npm does not run postinstall for a bundled dependency nested in a staged
+    // tarball. The platform package ships its shared-library symlink manifest
+    // and official hydration script; restore those links before activation.
+    const postgresPlatformPackage = path.join(stagedPayload, "node_modules", "@embedded-postgres", `${process.platform}-${process.arch}`);
+    const symlinkManifest = path.join(postgresPlatformPackage, "native", "pg-symlinks.json");
+    if (fs.existsSync(symlinkManifest)) {
+      await runCommand(process.execPath, [path.join(postgresPlatformPackage, "scripts", "hydrate-symlinks.js")], { cwd: postgresPlatformPackage, maxBuffer: 1024 * 1024 });
+      const links = JSON.parse(fs.readFileSync(symlinkManifest, "utf8")) as Array<{ target: string }>;
+      if (links.some(({ target }) => !fs.existsSync(path.join(postgresPlatformPackage, target)))) {
+        throw new Error("Bundled PostgreSQL native libraries are missing required symlinks.");
+      }
+    }
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
     return { payloadPath, reused: false, version: metadata.version };
