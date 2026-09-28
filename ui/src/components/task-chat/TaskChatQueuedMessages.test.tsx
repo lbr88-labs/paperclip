@@ -118,6 +118,10 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.querySelector<HTMLButtonElement>('[aria-label^="Reorder"]')?.disabled).toBe(true);
     expect(container.querySelector<HTMLButtonElement>('[data-testid^="task-chat-queued-discard-"]')?.disabled).toBe(true);
     expect(reorderQueuedMessageEntries([entry, queue.entries[1]], "comment-1", "comment-2")).toBeNull();
+    if (runtime === "native-plan") {
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')?.disabled).toBe(true);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+    }
     const action = runtime === "native" ? "steer" : "interrupt";
     await act(async () => { container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-comment-1"]`)!.click(); });
     if (action === "steer") expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");

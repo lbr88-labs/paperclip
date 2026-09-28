@@ -1399,6 +1399,44 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(injections).toBe(1);
   });
 
+  it("recovers a timed-out OMP approval when its interaction identity survives transport loss", async () => {
+    const seeded = await seedResponseQueue();
+    await db.update(agents).set({ adapterType: "omp_local" }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({
+      runnerProfileJson: { adapterDispatch: { adapterType: "omp_local" } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await seedDispatchIdentity(seeded);
+    let ready = true;
+    let injections = 0;
+    const accepted = new Map<string, string>();
+    registerServerAdapter({
+      ...getServerAdapter("process"), type: "omp_local",
+      getSteeringState: () => ready ? "available" : "temporarily_unavailable",
+      steer: async ({ correlationId }) => {
+        const cached = accepted.get(correlationId);
+        if (cached) return { turnId: cached };
+        if (!ready) throw Object.assign(new Error("No live OMP process"), { code: "steering_temporarily_unavailable" });
+        injections++;
+        accepted.set(correlationId, `steer:${correlationId}`);
+        throw Object.assign(new Error("Reply timed out after acceptance"), { code: "steering_timeout" });
+      },
+    });
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(initial.body.entries[0].comment.id).toBe(seeded.interactionId);
+    const payload = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision };
+    const endpoint = `/api/issues/${seeded.issueId}/queued-comments/${seeded.interactionId}/steer`;
+    const first = await request(client).post(endpoint).send(payload).expect(409);
+    expect(first.body.details?.code).toBe("steering_timeout");
+    ready = false;
+    const retry = await request(client).post(endpoint).send(payload).expect(200);
+    expect(retry.body.entries).toHaveLength(0);
+    expect(injections).toBe(1);
+    const [identity] = await db.select().from(runIdentityContexts)
+      .where(eq(runIdentityContexts.messageId, seeded.interactionId));
+    expect(identity).toMatchObject({ correlationId: `interaction:${seeded.interactionId}`, status: "accepted" });
+  });
+
   it("leaves the selected row queued when no native steering session is attached", async () => {
     const seeded = await seedQueue();
     const initial = await request(app(seeded.companyId))
