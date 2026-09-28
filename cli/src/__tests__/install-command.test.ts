@@ -120,6 +120,8 @@ describe("managed install commands", () => {
         fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
         fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
+        fs.mkdirSync(path.join(checkout, "skills", "paperclip"), { recursive: true });
+        fs.writeFileSync(path.join(checkout, "skills", "paperclip", "SKILL.md"), "# Paperclip");
         for (const workspacePackage of packages) {
           fs.mkdirSync(path.join(checkout, workspacePackage.dir), { recursive: true });
           fs.writeFileSync(path.join(checkout, workspacePackage.dir, "package.json"), JSON.stringify(workspacePackage.packageJson));
@@ -127,16 +129,21 @@ describe("managed install commands", () => {
         return { stdout: "", stderr: "" };
       }
       if (file === "corepack") {
+        const checkout = _options?.cwd;
+        if (typeof checkout !== "string") throw new Error("Git build requires a checkout directory");
         if (args.includes("prepare:ui-dist")) {
-          const uiDist = path.join(_options!.cwd!, "server", "ui-dist");
+          const uiDist = path.join(checkout, "server", "ui-dist");
           fs.mkdirSync(uiDist, { recursive: true });
           fs.writeFileSync(path.join(uiDist, "index.html"), "<html>Paperclip</html>");
         }
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
           const packageDir = args[args.indexOf("--dir") + 1];
-          if (packageDir === "server" && !fs.existsSync(path.join(_options!.cwd!, "server", "ui-dist", "index.html"))) {
+          if (packageDir === "server" && !fs.existsSync(path.join(checkout, "server", "ui-dist", "index.html"))) {
             throw new Error("Git install attempted to package a server without its UI");
+          }
+          if (packageDir === "server" && !fs.existsSync(path.join(checkout, "server", "skills", "paperclip", "SKILL.md"))) {
+            throw new Error("Git install attempted to package a server without its built-in skills");
           }
           const packageName = packageDir === "server" ? "paperclipai-server" : "paperclipai-shared";
           fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
@@ -175,7 +182,6 @@ describe("managed install commands", () => {
     const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
   });
-
 
   it("resolves the complete server workspace dependency closure in dependency order", () => {
     const checkout = path.join(root, "checkout");

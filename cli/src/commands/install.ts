@@ -281,6 +281,9 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     // The server's build does not produce its static UI; npm prepack normally
     // does this, but bundled-package staging copies files directly.
     await runCommand("corepack", ["pnpm", "--filter", "@paperclipai/server", "run", "prepare:ui-dist"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    // The published server resolves built-in skills from <pkg>/skills, while
+    // source checkouts keep them at the repository root.
+    fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, "server", "skills"), { recursive: true });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
