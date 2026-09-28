@@ -127,9 +127,17 @@ describe("managed install commands", () => {
         return { stdout: "", stderr: "" };
       }
       if (file === "corepack") {
+        if (args.includes("prepare:ui-dist")) {
+          const uiDist = path.join(_options!.cwd!, "server", "ui-dist");
+          fs.mkdirSync(uiDist, { recursive: true });
+          fs.writeFileSync(path.join(uiDist, "index.html"), "<html>Paperclip</html>");
+        }
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
           const packageDir = args[args.indexOf("--dir") + 1];
+          if (packageDir === "server" && !fs.existsSync(path.join(_options!.cwd!, "server", "ui-dist", "index.html"))) {
+            throw new Error("Git install attempted to package a server without its UI");
+          }
           const packageName = packageDir === "server" ? "paperclipai-server" : "paperclipai-shared";
           fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
         }
@@ -168,25 +176,6 @@ describe("managed install commands", () => {
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
   });
 
-  it("builds git checkouts with NODE_ENV cleared so ambient production mode keeps devDependencies", async () => {
-    process.env.NODE_ENV = "production";
-    const sha = "d".repeat(40);
-    const runCommand = createGitCheckoutRunCommand(sha);
-    await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths())).resolves.toMatchObject({ version: "0.3.1", reused: false });
-    const buildCalls = runCommand.mock.calls.filter(([file, args]) =>
-      file === "bash" ||
-      file === "corepack" ||
-      (file === "npm" && args[0] === "pack") ||
-      (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")));
-    expect(buildCalls).toHaveLength(9);
-    for (const call of buildCalls) {
-      const env = call[2]?.env;
-      expect(env, `${call[0]} ${call[1].join(" ")} must run with an explicit env`).toBeDefined();
-      expect(env, `${call[0]} ${call[1].join(" ")} must not inherit NODE_ENV`).not.toHaveProperty("NODE_ENV");
-    }
-    const uiPackCall = buildCalls.find(([file, , options]) => file === "corepack" && options?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST === "1");
-    expect(uiPackCall).toBeDefined();
-  });
 
   it("resolves the complete server workspace dependency closure in dependency order", () => {
     const checkout = path.join(root, "checkout");

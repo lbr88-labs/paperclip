@@ -171,7 +171,6 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
 }
 
 function canCreateAgentsLegacy(agent: { role: string; permissions: unknown }) {
-  if (agent.role === "ceo") return true;
   // Raw agent rows may predate permission normalization; apply the same
   // defaults the agent service applies on read so enforcement matches what
   // the API reports.
@@ -2160,6 +2159,13 @@ export function authorizationService(db: Db | DbTransaction) {
       const policyDeny = await denyForAssignmentPolicyIfNeeded(policyEffect);
       if (policyDeny) return policyDeny;
       if (policyEffect.kind === "restricted") {
+        if (actorAgent.role === "ceo" && trustResolution.kind === "standard") {
+          return allow({
+            action: input.action,
+            reason: "allow_role_default",
+            explanation: "Allowed by the CEO role within the company.",
+          });
+        }
         const grantDecision = await decideWithTaskAssignmentGrants("agent", actorAgentId);
         if (grantDecision.allowed) return grantDecision;
         return denyRestrictedAssignmentPolicy(policyEffect);
@@ -2203,6 +2209,25 @@ export function authorizationService(db: Db | DbTransaction) {
       }
       if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
     }
+    // The CEO role supplies company permissions without per-agent grants. Keep
+    // company, key-scope, low-trust, assignment, and visible-issue policy gates
+    // above this point; the role is not instance-admin authority.
+    if (
+      actorAgent.role === "ceo" &&
+      isSimpleAssignableAgentStatus(actorAgent.status) &&
+      trustResolution.kind === "standard" &&
+      (permissionKey !== null ||
+        input.action === "agent_config:read" ||
+        input.action === "agent_config:update" ||
+        input.action === "skill_config:update")
+    ) {
+      return allow({
+        action: input.action,
+        reason: "allow_role_default",
+        explanation: "Allowed by the CEO role within the company.",
+      });
+    }
+
     if (
       input.action === "agent_config:update" &&
       input.resource.type === "agent" &&
@@ -2260,19 +2285,6 @@ export function authorizationService(db: Db | DbTransaction) {
         explanation: "Allowed by legacy agent creator authority.",
       });
     }
-
-    // Active-checkout management deliberately does not ride on
-    // canCreateAgents: that flag is default-on for standard-trust agents, and
-    // coupling would let any peer write over another agent's checked-out
-    // issue. CEOs, explicit grants, and the manager chain remain the paths.
-    if (input.action === "tasks:manage_active_checkouts" && actorAgent.role === "ceo") {
-      return allow({
-        action: input.action,
-        reason: "allow_legacy_agent_creator",
-        explanation: "Allowed by legacy agent creator authority.",
-      });
-    }
-
     if (
       input.action === "tasks:manage_active_checkouts" &&
       input.resource.type === "issue" &&
