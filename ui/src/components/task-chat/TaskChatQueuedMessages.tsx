@@ -142,39 +142,42 @@ function SortableQueuedMessage({
         {entry.comment.body}
       </span>
 
-      {queue.protocol === "legacy" ? (
-        <button
-          type="button"
-          onClick={onInterrupt}
-          disabled={busy || !queue.queueId || !onInterrupt}
-          title={queue.targetRunId ? "Interrupt the active turn and send queued messages" : "Send queued messages now"}
-          className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-          data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
-        >
-          {action === "interrupt" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-          ) : (
-            <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
-          )}
-          Interrupt
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={onSteer}
-          disabled={steerDisabled}
-          title={steerTitle}
-          className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-          data-testid={`task-chat-queued-steer-${entry.comment.id}`}
-        >
-          {action === "steer" ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
-          ) : (
-            <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
-          )}
-          Steer
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={onInterrupt}
+        disabled={busy || queue.protocol !== "legacy" || !queue.queueId || !onInterrupt}
+        aria-description={queue.protocol !== "legacy" ? "Native runner queues cannot be interrupted" : undefined}
+        title={queue.protocol !== "legacy"
+          ? "Interrupting native runner queues is not supported"
+          : queue.targetRunId
+            ? "Interrupt the active turn and send queued messages"
+            : "Send queued messages now"}
+        className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+        data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
+      >
+        {action === "interrupt" ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+        ) : (
+          <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
+        )}
+        Interrupt
+      </button>
+      <button
+        type="button"
+        onClick={onSteer}
+        disabled={steerDisabled}
+        title={steerTitle}
+        aria-description={steerDisabled ? steerTitle : undefined}
+        className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+        data-testid={`task-chat-queued-steer-${entry.comment.id}`}
+      >
+        {action === "steer" ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
+        ) : (
+          <CornerDownRight className="h-3.5 w-3.5" aria-hidden />
+        )}
+        Steer
+      </button>
 
       <button
         type="button"
@@ -306,7 +309,6 @@ export function TaskChatQueuedMessages({
     ) {
       return;
     }
-    const previous = entries;
     setPending({ commentId, action });
     setVisibleError(null);
     setAnnouncement(
@@ -316,16 +318,11 @@ export function TaskChatQueuedMessages({
           ? "Sending queued messages."
           : "Discarding queued message.",
     );
-    if (action === "steer") {
-      setEntries((current) =>
-        current.filter((entry) => entry.comment.id !== commentId),
-      );
-    }
     try {
       if (action === "steer") await onSteer(commentId, queue.revision);
       else if (action === "interrupt") await onInterrupt?.();
       else await onDiscard(commentId, queue.revision);
-      if (action === "discard") {
+      if (action === "steer" || action === "discard") {
         setEntries((current) =>
           current.filter((entry) => entry.comment.id !== commentId),
         );
@@ -338,7 +335,6 @@ export function TaskChatQueuedMessages({
             : "Queued message discarded.",
       );
     } catch (error) {
-      if (action === "steer") setEntries(previous);
       setAnnouncement("");
       const code = queueActionErrorCode(error);
       setVisibleError(
