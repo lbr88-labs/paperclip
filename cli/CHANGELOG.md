@@ -6,6 +6,7 @@
 
 - Uninstall validates and locks the managed CLI store before stopping the background service, so an unverified or busy store leaves the running service untouched.
 - Service restart and doctor validate an active process's version from its matching hot-restart receipt when the public health endpoint redacts version details.
+- Git installs include bounded build stdout in failures when the build tool leaves stderr empty, exposing the actual failed step instead of only the wrapper command.
 
 ## 0.3.1
 

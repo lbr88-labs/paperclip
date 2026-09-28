@@ -48,8 +48,12 @@ export async function runCommandWithDiagnostics(
     const stderr = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string"
       ? error.stderr.trim()
       : "";
-    if (!stderr || (error instanceof Error && error.message.includes(stderr))) throw error;
-    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${stderr}`, { cause: error });
+    const stdout = error && typeof error === "object" && "stdout" in error && typeof error.stdout === "string"
+      ? error.stdout.trim()
+      : "";
+    const detail = stderr || stdout.slice(-8_192);
+    if (!detail || (error instanceof Error && error.message.includes(detail))) throw error;
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n${detail}`, { cause: error });
   }
 }
 
