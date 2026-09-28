@@ -333,7 +333,15 @@ describe("managed install commands", () => {
     fs.mkdirSync(paths.cliRoot, { recursive: true });
     fs.writeFileSync(unrelatedFile, "keep");
 
-    await expect(uninstallCommand()).rejects.toThrow("unverified install store");
+    const detectServiceManager = vi.fn(async () => ({
+      supported: true as const,
+      manager: { status: vi.fn(async () => ({ installed: false, active: false })) } as never,
+    }));
+    await expect(uninstallCommand({
+      detectServiceManager,
+      userHomeDir: process.env.HOME!,
+    })).rejects.toThrow("unverified install store");
+    expect(detectServiceManager).not.toHaveBeenCalled();
     expect(fs.readFileSync(unrelatedFile, "utf8")).toBe("keep");
   });
 
@@ -355,7 +363,18 @@ describe("managed install commands", () => {
 
     await withInstallStoreLock(
       async () => {
-        await expect(uninstallCommand()).rejects.toThrow("already running");
+        const status = vi.fn(async () => ({ installed: true, active: true }));
+        const uninstall = vi.fn(async () => {});
+        const detectServiceManager = vi.fn(async () => ({
+          supported: true as const,
+          manager: { status, uninstall } as never,
+        }));
+        await expect(uninstallCommand({
+          detectServiceManager,
+          userHomeDir: process.env.HOME!,
+        })).rejects.toThrow("already running");
+        expect(status).not.toHaveBeenCalled();
+        expect(uninstall).not.toHaveBeenCalled();
       },
       paths,
     );
