@@ -152,6 +152,9 @@ describe("managed install commands", () => {
       }
       if (file === "bash") return { stdout: "", stderr: "" };
       if (file === "npm" && args[0] === "pack") {
+        if (args[1]?.includes("workspace-package-") && !args.includes("--ignore-scripts")) {
+          throw new Error("Staged workspace package cannot execute prepack without the checkout");
+        }
         const packageName = args[1]?.includes("workspace-package-") ? "paperclipai-db" : "paperclipai";
         fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-0.3.1.tgz`), "package");
         return { stdout: "", stderr: "" };
