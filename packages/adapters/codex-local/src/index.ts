@@ -138,7 +138,7 @@ Core fields:
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
 - fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
-- dangerouslyBypassApprovalsAndSandbox (boolean, optional): run with bypass flag
+- dangerouslyBypassApprovalsAndSandbox (boolean, optional): use Codex's no-approval, no-sandbox mode in CLI and ACP when networking is allowed; explicit ACP env.INITIAL_AGENT_MODE and explicit network denial take precedence
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
@@ -170,7 +170,7 @@ Notes:
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
 - Fast mode is supported on GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
-- The ACP engine keeps its workspace sandbox and enables network access on each turn. Explicit sandbox_workspace_write.network_access overrides in extraArgs (or env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false") disable it; execution-target network denial wins. The bundled ACP patch is needed because upstream mode presets override Codex config.toml on every turn.
-- The CLI engine defaults to a writable workspace sandbox with network access for unattended work and Paperclip API calls. It does not enable the dangerous bypass flag. Explicit sandbox modes/profiles and network overrides in extraArgs retain their meaning. An execution-target network denial remains enforced.
+- The ACP engine enables network access in its workspace sandbox on each turn by default. When dangerouslyBypassApprovalsAndSandbox is true and networking is allowed, it selects codex-acp's agent-full-access mode. An explicit env.INITIAL_AGENT_MODE wins over the bypass setting; without one, explicit sandbox_workspace_write.network_access=false in extraArgs (or env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false") keeps the workspace sandbox. Execution-target network denial remains enforced by the target. The bundled ACP patch is needed because upstream mode presets override Codex config.toml on every turn.
+- The CLI engine uses the dangerous bypass flag when configured, otherwise it uses a writable workspace sandbox with network access for unattended work and Paperclip API calls. Explicit sandbox modes/profiles and network overrides in extraArgs retain their meaning. An execution-target network denial remains enforced.
 - Codex ACP is the preferred auto lane when Node >=24.11.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Missing ACP prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
 `;
