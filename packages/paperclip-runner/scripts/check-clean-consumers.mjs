@@ -154,7 +154,7 @@ async function resolveInstalledDependencyRoot(packageRoot, dependencyName) {
 
 async function stageRunnerdArtifact(destination) {
   const suffix = process.platform === "win32" ? ".exe" : "";
-  const source = resolve(runnerRoot, `runner/target/release/paperclip-runnerd${suffix}`);
+  const source = resolve(runnerRoot, process.env.CARGO_TARGET_DIR ?? "runner/target", "release", `paperclip-runnerd${suffix}`);
   const executablePath = resolve(destination, `paperclip-runnerd-${process.platform}-${process.arch}${suffix}`);
   await copyFile(source, executablePath);
   if (process.platform !== "win32") await chmod(executablePath, 0o755);
