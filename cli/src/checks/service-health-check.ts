@@ -10,6 +10,7 @@ import {
   type ServiceManagerDetection,
 } from "../services/service-manager.js";
 import { buildLocalHealthUrl } from "../utils/health-url.js";
+import { readReportedVersionForPid } from "../utils/restart-report.js";
 import type { CheckResult } from "./index.js";
 
 type HealthResult = { ok: boolean; version: string | null; error?: string };
@@ -125,6 +126,9 @@ export async function serviceHealthChecks(
   try {
     expectedVersion = readInstallManifest()?.version ?? null;
   } catch {}
+  const runningVersion = health.version ?? (health.ok && status.active
+    ? await readReportedVersionForPid(instanceId, status.pid)
+    : null);
   results.push(
     !health.ok
       ? {
@@ -133,24 +137,30 @@ export async function serviceHealthChecks(
           message: health.error ?? "Health endpoint did not report ok",
           repairHint: "Inspect `paperclipai service status` and `paperclipai service logs`",
         }
-      : expectedVersion && health.version !== expectedVersion
+      : expectedVersion && runningVersion && runningVersion !== expectedVersion
         ? {
             name: "Service version",
             status: "fail",
-            message: `Running ${health.version ?? "unknown"}; managed install is ${expectedVersion}`,
+            message: `Running ${runningVersion}; managed install is ${expectedVersion}`,
             repairHint: "Run `paperclipai service restart --expected-version " + expectedVersion + "`",
           }
-        : status.active
+        : status.active && expectedVersion && !runningVersion
           ? {
-              name: "Service health",
-              status: "pass",
-              message: `Healthy${health.version ? ` at version ${health.version}` : ""}`,
-            }
-          : {
-              name: "Service health",
+              name: "Service version",
               status: "warn",
-              message: `The configured port answers healthy${health.version ? ` (version ${health.version})` : ""}, but not from ${status.serviceName} — the service is inactive`,
-            },
+              message: "Healthy, but version is redacted and no restart receipt matches this process",
+            }
+          : status.active
+            ? {
+                name: "Service health",
+                status: "pass",
+                message: `Healthy${runningVersion ? ` at version ${runningVersion}` : ""}`,
+              }
+            : {
+                name: "Service health",
+                status: "warn",
+                message: `The configured port answers healthy${runningVersion ? ` (version ${runningVersion})` : ""}, but not from ${status.serviceName} — the service is inactive`,
+              },
   );
 
   if (status.enabled && status.linger === false) {
