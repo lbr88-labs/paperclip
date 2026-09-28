@@ -188,6 +188,9 @@ pnpm --filter @paperclipai/paperclip-runner verify
 
 The verification command requires a stable Rust toolchain with `cargo` on
 `PATH`, in addition to Node.js 24.11+ and pnpm 9+.
+The pinned Rust version is in `rust-toolchain.toml`. Set `CARGO_TARGET_DIR`
+to reuse build artifacts outside a temporary checkout; binary staging and
+clean-consumer checks read the same target directory.
 
 Minimal Debian/Ubuntu hosts without root access can extract the required
 Playwright browser libraries into a user-owned cache and run the same acceptance

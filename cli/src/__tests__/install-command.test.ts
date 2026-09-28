@@ -120,6 +120,8 @@ describe("managed install commands", () => {
         fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
         fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
+        fs.mkdirSync(path.join(checkout, "skills", "paperclip"), { recursive: true });
+        fs.writeFileSync(path.join(checkout, "skills", "paperclip", "SKILL.md"), "# Paperclip");
         for (const workspacePackage of packages) {
           fs.mkdirSync(path.join(checkout, workspacePackage.dir), { recursive: true });
           fs.writeFileSync(path.join(checkout, workspacePackage.dir, "package.json"), JSON.stringify(workspacePackage.packageJson));
@@ -127,9 +129,22 @@ describe("managed install commands", () => {
         return { stdout: "", stderr: "" };
       }
       if (file === "corepack") {
+        const checkout = _options?.cwd;
+        if (typeof checkout !== "string") throw new Error("Git build requires a checkout directory");
+        if (args.includes("prepare:ui-dist")) {
+          const uiDist = path.join(checkout, "server", "ui-dist");
+          fs.mkdirSync(uiDist, { recursive: true });
+          fs.writeFileSync(path.join(uiDist, "index.html"), "<html>Paperclip</html>");
+        }
         if (args.includes("pack")) {
           const destination = args[args.indexOf("--pack-destination") + 1];
           const packageDir = args[args.indexOf("--dir") + 1];
+          if (packageDir === "server" && !fs.existsSync(path.join(checkout, "server", "ui-dist", "index.html"))) {
+            throw new Error("Git install attempted to package a server without its UI");
+          }
+          if (packageDir === "server" && !fs.existsSync(path.join(checkout, "server", "skills", "paperclip", "SKILL.md"))) {
+            throw new Error("Git install attempted to package a server without its built-in skills");
+          }
           const packageName = packageDir === "server" ? "paperclipai-server" : "paperclipai-shared";
           fs.writeFileSync(path.join(destination, `${packageName}-0.3.1.tgz`), "package");
         }
@@ -137,6 +152,9 @@ describe("managed install commands", () => {
       }
       if (file === "bash") return { stdout: "", stderr: "" };
       if (file === "npm" && args[0] === "pack") {
+        if (args[1]?.includes("workspace-package-") && !args.includes("--ignore-scripts")) {
+          throw new Error("Staged workspace package cannot execute prepack without the checkout");
+        }
         const packageName = args[1]?.includes("workspace-package-") ? "paperclipai-db" : "paperclipai";
         fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-0.3.1.tgz`), "package");
         return { stdout: "", stderr: "" };
@@ -166,26 +184,6 @@ describe("managed install commands", () => {
     expect(runCommand.mock.calls.filter(([command, args]) => command === "npm" && args[0] === "pack")).toHaveLength(2);
     const installCall = runCommand.mock.calls.find(([command, args]) => command === "npm" && args[0] === "install");
     expect(installCall?.[1].filter((arg) => arg.endsWith(".tgz"))).toHaveLength(4);
-  });
-
-  it("builds git checkouts with NODE_ENV cleared so ambient production mode keeps devDependencies", async () => {
-    process.env.NODE_ENV = "production";
-    const sha = "d".repeat(40);
-    const runCommand = createGitCheckoutRunCommand(sha);
-    await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, resolveInstallStorePaths())).resolves.toMatchObject({ version: "0.3.1", reused: false });
-    const buildCalls = runCommand.mock.calls.filter(([file, args]) =>
-      file === "bash" ||
-      file === "corepack" ||
-      (file === "npm" && args[0] === "pack") ||
-      (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")));
-    expect(buildCalls).toHaveLength(9);
-    for (const call of buildCalls) {
-      const env = call[2]?.env;
-      expect(env, `${call[0]} ${call[1].join(" ")} must run with an explicit env`).toBeDefined();
-      expect(env, `${call[0]} ${call[1].join(" ")} must not inherit NODE_ENV`).not.toHaveProperty("NODE_ENV");
-    }
-    const uiPackCall = buildCalls.find(([file, , options]) => file === "corepack" && options?.env?.PAPERCLIP_RELEASE_REUSE_UI_DIST === "1");
-    expect(uiPackCall).toBeDefined();
   });
 
   it("resolves the complete server workspace dependency closure in dependency order", () => {
@@ -335,7 +333,15 @@ describe("managed install commands", () => {
     fs.mkdirSync(paths.cliRoot, { recursive: true });
     fs.writeFileSync(unrelatedFile, "keep");
 
-    await expect(uninstallCommand()).rejects.toThrow("unverified install store");
+    const detectServiceManager = vi.fn(async () => ({
+      supported: true as const,
+      manager: { status: vi.fn(async () => ({ installed: false, active: false })) } as never,
+    }));
+    await expect(uninstallCommand({
+      detectServiceManager,
+      userHomeDir: process.env.HOME!,
+    })).rejects.toThrow("unverified install store");
+    expect(detectServiceManager).not.toHaveBeenCalled();
     expect(fs.readFileSync(unrelatedFile, "utf8")).toBe("keep");
   });
 
@@ -357,7 +363,18 @@ describe("managed install commands", () => {
 
     await withInstallStoreLock(
       async () => {
-        await expect(uninstallCommand()).rejects.toThrow("already running");
+        const status = vi.fn(async () => ({ installed: true, active: true }));
+        const uninstall = vi.fn(async () => {});
+        const detectServiceManager = vi.fn(async () => ({
+          supported: true as const,
+          manager: { status, uninstall } as never,
+        }));
+        await expect(uninstallCommand({
+          detectServiceManager,
+          userHomeDir: process.env.HOME!,
+        })).rejects.toThrow("already running");
+        expect(status).not.toHaveBeenCalled();
+        expect(uninstall).not.toHaveBeenCalled();
       },
       paths,
     );

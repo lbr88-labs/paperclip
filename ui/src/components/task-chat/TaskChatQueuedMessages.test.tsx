@@ -118,6 +118,10 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.querySelector<HTMLButtonElement>('[aria-label^="Reorder"]')?.disabled).toBe(true);
     expect(container.querySelector<HTMLButtonElement>('[data-testid^="task-chat-queued-discard-"]')?.disabled).toBe(true);
     expect(reorderQueuedMessageEntries([entry, queue.entries[1]], "comment-1", "comment-2")).toBeNull();
+    if (runtime === "native-plan") {
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]')?.disabled).toBe(true);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+    }
     const action = runtime === "native" ? "steer" : "interrupt";
     await act(async () => { container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-comment-1"]`)!.click(); });
     if (action === "steer") expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
@@ -138,7 +142,7 @@ describe("TaskChatQueuedMessages", () => {
     expect(next?.map((entry) => entry.position)).toEqual([0, 1]);
   });
 
-  it("promotes only the selected steering row immediately", async () => {
+  it("removes only the selected steering row after acknowledgement", async () => {
     const acknowledgement = deferred<void>();
     const props = render({
       onSteer: vi.fn().mockReturnValue(acknowledgement.promise),
@@ -152,11 +156,7 @@ describe("TaskChatQueuedMessages", () => {
       await Promise.resolve();
     });
     expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
-    expect(
-      container.querySelector(
-        '[data-testid="task-chat-queued-message-comment-1"]',
-      ),
-    ).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).not.toBeNull();
     expect(
       container.querySelector(
         '[data-testid="task-chat-queued-message-comment-2"]',
@@ -167,6 +167,7 @@ describe("TaskChatQueuedMessages", () => {
       acknowledgement.resolve();
       await acknowledgement.promise;
     });
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
   });
 
   it("keeps a row queued when steering fails and announces the retryable state", async () => {
@@ -197,6 +198,18 @@ describe("TaskChatQueuedMessages", () => {
         '[data-testid="task-chat-queued-steer-comment-1"]',
       )?.disabled,
     ).toBe(true);
+  });
+
+  it("explains when an OMP run cannot currently accept steering but can still be interrupted", () => {
+    render({
+      queue: { ...queue, protocol: "legacy", steeringDisposition: "temporarily_unavailable" },
+      onInterrupt: vi.fn().mockResolvedValue(undefined),
+    });
+    const steer = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]');
+    const interrupt = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]');
+    expect(steer?.disabled).toBe(true);
+    expect(steer?.title).toContain("temporarily unavailable");
+    expect(interrupt?.disabled).toBe(false);
   });
 
   it("waits for authoritative discard acknowledgement before removing the row", async () => {
@@ -314,6 +327,33 @@ describe("TaskChatQueuedMessages", () => {
     ).toBeNull();
   });
 
+  it("offers both delivery choices on an active steerable legacy run", async () => {
+    const onSteer = vi.fn().mockResolvedValue(undefined);
+    const onInterrupt = vi.fn().mockResolvedValue(undefined);
+    render({
+      queue: { ...queue, protocol: "legacy", steeringDisposition: "available" },
+      onSteer,
+      onInterrupt,
+    });
+    const steer = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-steer-comment-1"]');
+    const interrupt = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]');
+    expect(steer?.disabled).toBe(false);
+    expect(interrupt?.disabled).toBe(false);
+    await act(async () => { steer?.click(); });
+    expect(onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
+    expect(onInterrupt).not.toHaveBeenCalled();
+  });
+
+  it("keeps native interruption disabled even when an interrupt callback exists", () => {
+    const onInterrupt = vi.fn().mockResolvedValue(undefined);
+    render({ onInterrupt });
+    const interrupt = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]');
+    expect(interrupt?.disabled).toBe(true);
+    expect(interrupt?.title).toContain("not supported");
+    interrupt?.click();
+    expect(onInterrupt).not.toHaveBeenCalled();
+  });
+
   it.each(["run-1", null])("delivers legacy queued messages with target %s", async (targetRunId) => {
     const onInterrupt = vi.fn().mockResolvedValue(undefined);
     render({
@@ -335,11 +375,9 @@ describe("TaskChatQueuedMessages", () => {
     });
 
     expect(onInterrupt).toHaveBeenCalledOnce();
-    expect(
-      container.querySelector(
-        '[data-testid="task-chat-queued-steer-comment-1"]',
-      ),
-    ).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-steer-comment-1"]',
+    )?.disabled).toBe(true);
     expect(
       container.querySelector(
         '[data-testid="task-chat-queued-message-comment-1"]',

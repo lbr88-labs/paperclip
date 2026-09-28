@@ -150,6 +150,40 @@ export function createServerAdapter(): ServerAdapterModule {
 }
 ```
 
+### Live queued-message steering (optional)
+
+`ServerAdapterModule` may implement `getSteeringState(runId)` and `steer(input)`
+to deliver a board user's queued message **to the same running process**,
+without interrupting it or starting a replacement run:
+
+```ts
+getSteeringState?: (runId: string) => "available" | "temporarily_unavailable";
+steer?: (input: {
+  runId: string;
+  message: string;
+  correlationId: string;
+  onAcknowledged?: () => Promise<void>;
+}) => Promise<{ turnId: string }>;
+```
+
+Report `available` only while that exact run's live transport can accept
+steering. `steer` resolves only after provider acknowledgement, invokes
+`onAcknowledged` after acknowledgement (including a late acknowledgement),
+and treats `correlationId` as an idempotency key: retries of the same message
+return the same `turnId` without injecting it twice, even if the process is
+no longer accepting new steering. Reject a changed message for that key
+instead of acknowledging the old content. A timeout is uncertain, not a
+reason to send another message under a new correlation id. Reject with an
+`Error` whose `code` is `steering_temporarily_unavailable`,
+`steering_timeout`, or `steering_rejected` as appropriate.
+
+The queued-comment route currently enables this external hook only for
+`omp_local` legacy runs whose persisted dispatch type is `omp_local`. A remote
+JSON execution or an inactive/missing hook must report unavailable or
+unsupported and leave the message queued. The legacy Interrupt action is
+independent of Steer; it still stops the active run and delivers queued
+messages in the successor run.
+
 ### src/server/execute.ts
 
 The core execution function. Receives an `AdapterExecutionContext` and returns an `AdapterExecutionResult`.

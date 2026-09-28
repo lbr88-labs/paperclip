@@ -175,6 +175,14 @@ test("bundled package staging materializes workspace dependency versions", () =>
   });
 });
 
+test("bundled server references the published versions of its workspace dependencies", () => {
+  const manifest = materializePublishManifest(serverPackage);
+  const pluginSdk = JSON.parse(readFileSync(new URL("../packages/plugins/sdk/package.json", import.meta.url), "utf8"));
+  const shared = JSON.parse(readFileSync(new URL("../packages/shared/package.json", import.meta.url), "utf8"));
+  assert.equal(manifest.dependencies["@paperclipai/plugin-sdk"], pluginSdk.version);
+  assert.equal(manifest.dependencies["@paperclipai/shared"], shared.version);
+});
+
 test("bundled package staging installs only dependencies included in the tarball", () => {
   const publishManifest = {
     name: "@paperclipai/db",

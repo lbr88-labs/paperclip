@@ -55,7 +55,7 @@ self.Response = _undefined;
 self.Headers = _undefined;
 self.Cache = _undefined;
 self.CacheStorage = _undefined;
-self.caches = _undefined;
+Object.defineProperty(self, "caches", { value: _undefined, writable: false, configurable: false });
 
 // Import / eval escape hatches
 self.importScripts = _undefined;
@@ -76,7 +76,7 @@ if (self.navigator) {
 self.BroadcastChannel = _undefined;
 
 // IndexedDB (prevents persistent state exfiltration)
-self.indexedDB = _undefined;
+Object.defineProperty(self, "indexedDB", { value: _undefined, writable: false, configurable: false });
 self.IDBFactory = _undefined;
 
 // ── 2. Parser state ─────────────────────────────────────────────────────────

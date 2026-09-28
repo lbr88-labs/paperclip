@@ -39,6 +39,9 @@ function otherServiceDefinitions(platform: NodeJS.Platform, userHomeDir: string,
 export async function uninstallCommand(
   dependencies: Partial<UninstallDependencies> = {},
 ): Promise<void> {
+  const paths = resolveInstallStorePaths();
+  const hadStore = fs.existsSync(paths.cliRoot);
+  if (hadStore) assertManagedInstallStore(paths);
   const instanceId = resolvePaperclipInstanceId();
   const detect = dependencies.detectServiceManager ?? detectServiceManager;
   const platform = dependencies.platform ?? process.platform;
@@ -62,16 +65,13 @@ export async function uninstallCommand(
       );
     }
   }
-  if (detection.supported) {
-    const status = await detection.manager.status();
-    if (status.installed || status.active) await detection.manager.uninstall();
-  }
 
-  const paths = resolveInstallStorePaths();
-  const hadStore = fs.existsSync(paths.cliRoot);
-  if (hadStore) assertManagedInstallStore(paths);
   const shimRemoved = await withInstallStoreLock(async () => {
     if (hadStore) assertManagedInstallStore(paths);
+    if (detection.supported) {
+      const status = await detection.manager.status();
+      if (status.installed || status.active) await detection.manager.uninstall();
+    }
     const removed = removeManagedShim(paths);
 
     const home = process.env.HOME;

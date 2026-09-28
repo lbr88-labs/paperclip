@@ -46,16 +46,16 @@ With a parser, the UI renders:
 └────────┬─────────┘
          │ serves JS to browser
          ▼
-┌──────────────────┐   fetch() + eval   ┌──────────────────┐
-│  Paperclip UI     │─────────────────────→│  parseStdoutLine │
-│  (dynamic loader) │   registers parser  │  (per-adapter)   │
-└──────────────────┘                     └──────────────────┘
+┌──────────────────┐   fetch() + sandboxed Worker   ┌──────────────────┐
+│  Paperclip UI     │─────────────────────────────────→│  parseStdoutLine │
+│  (dynamic loader) │      registers parser           │  (per-adapter)   │
+└──────────────────┘                                  └──────────────────┘
 ```
 
-1. **Build time** — You compile `src/ui-parser.ts` to `dist/ui-parser.js` (zero runtime imports)
-2. **Server startup** — Plugin loader reads the file and caches it in memory
-3. **UI load** — When the user opens a run, the UI fetches the parser from `GET /api/:type/ui-parser.js`
-4. **Runtime** — The fetched module is eval'd and registered. All subsequent lines use the real parser
+1. **Build time** — Compile `src/ui-parser.ts` to `dist/ui-parser.js` (zero runtime imports).
+2. **Server startup** — The plugin loader reads the file and caches it in memory.
+3. **UI load** — The issue chat or run view fetches the parser from `GET /api/adapters/:type/ui-parser.js`.
+4. **Runtime** — A dedicated Worker evaluates the parser with network and browser storage APIs disabled. Parsed stdout deltas then appear in the live issue chat and run transcript; the UI falls back to raw output if the parser cannot start.
 
 ## Contract: package.json
 

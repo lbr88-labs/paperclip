@@ -29,6 +29,7 @@ import {
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { findActiveServerAdapter } from "../adapters/index.js";
 import type { ChatChannelService } from "../services/chat-channels.js";
 import {
   activityLog,
@@ -56,6 +57,7 @@ import {
   pipelineStages,
   pipelines,
   projectWorkspaces,
+  runIdentityContexts,
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
@@ -7008,6 +7010,17 @@ export function issueRoutes(
     });
   }
 
+  function dispatchedAdapterType(run: IssueQueueRun | null): string | null {
+    const adapterType = readObject(readObject(run?.runnerProfileJson).adapterDispatch).adapterType;
+    return typeof adapterType === "string" ? adapterType : null;
+  }
+
+  function liveOmpSteeringAdapter(run: IssueQueueRun) {
+    if (run.runtimeMode !== "legacy" || dispatchedAdapterType(run) !== "omp_local") return null;
+    const adapter = findActiveServerAdapter("omp_local");
+    return adapter?.type === "omp_local" ? adapter : null;
+  }
+
   async function buildQueuedCommentQueue(input: {
     executor: IssueQueueDb;
     issue: { id: string; companyId: string; assigneeAgentId: string | null; conversationAgentId?: string | null };
@@ -7021,6 +7034,9 @@ export function issueRoutes(
         ? await findQueuedCommentWake(input.executor, input.issue)
         : input.queueState;
     const wake = queueState?.wake ?? null;
+    const activeRun = input.activeRun?.agentId === wake?.agentId &&
+      input.activeRun?.agentId === input.issue.assigneeAgentId
+        ? input.activeRun : null;
     const comments = await queueCommentsForWake(
       input.executor,
       input.issue.id,
@@ -7042,17 +7058,28 @@ export function issueRoutes(
     const steering = decideQueuedCommentQueueSteering({
       state: queueState?.state ?? null,
       queueRunRuntimeMode: queueState?.state === "queued" ? queueState.queueRun?.runtimeMode ?? null : null,
-      activeRun: input.activeRun,
+      activeRun,
       assignedAgentAdapterType: assignedAgent?.adapterType ?? null,
+      activeRunAdapterType: dispatchedAdapterType(activeRun),
       queuedCommentCount: comments.length,
     });
     const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
       input.issue.conversationAgentId ? "unsupported" : steering.kind !== "probe"
         ? steering.kind
         : input.steeringDisposition
-          ?? (await getNativeSessionSteeringState(steering.steeringRunId)
-            .then((state) => state.disposition)
-            .catch(() => "temporarily_unavailable" as const));
+          ?? (steering.provider === "native"
+            ? await getNativeSessionSteeringState(steering.steeringRunId)
+                .then((state) => state.disposition)
+                .catch(() => "temporarily_unavailable" as const)
+            : (() => {
+                const adapter = activeRun && liveOmpSteeringAdapter(activeRun);
+                if (!adapter?.steer || !adapter.getSteeringState) return "unsupported" as const;
+                try {
+                  return adapter.getSteeringState(steering.steeringRunId);
+                } catch {
+                  return "temporarily_unavailable" as const;
+                }
+              })());
     const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
     const queue = buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
@@ -7060,7 +7087,7 @@ export function issueRoutes(
         ? { reason: wait.reason, message: wait.message } : null,
       queueId: wake?.id ?? null,
       state: queueState?.state ?? null,
-      activeRunId: input.activeRun?.id ?? null,
+      activeRunId: activeRun?.id ?? null,
       protocol: steering.protocol,
       steeringDisposition,
       comments,
@@ -7204,6 +7231,7 @@ export function issueRoutes(
       const runContext = readObject(activeRun?.contextSnapshot);
       if (
         !activeRun ||
+        activeRun.agentId !== wake.agentId ||
         (runContext.issueId !== input.issue.id &&
           runContext.taskId !== input.issue.id)
       ) {
@@ -15564,6 +15592,18 @@ export function issueRoutes(
         eq(agentWakeupRequests.id, req.body.queueId), eq(agentWakeupRequests.companyId, issue.companyId),
       )).then(rows => rows[0]);
       const response = responseWake ? await readQueuedInteractionResponse(db, issue.companyId, issue.id, responseWake.payload) : null;
+      // A previous attempt may have reached the provider before its HTTP/DB
+      // acknowledgement completed. Only that reservation may consult the
+      // adapter's correlation-id cache when the live transport is unavailable.
+      const [priorIdentity] = await db.select({ status: runIdentityContexts.status })
+        .from(runIdentityContexts)
+        .where(and(
+          eq(runIdentityContexts.companyId, issue.companyId),
+          eq(runIdentityContexts.runId, req.body.targetRunId),
+          eq(runIdentityContexts.messageId, commentId),
+          eq(runIdentityContexts.correlationId, `${response?.comment.id === commentId ? "interaction" : "message"}:${commentId}`),
+        ))
+        .limit(1);
       const steeringIdentity = await reserveSteeredIdentity(db, {
         companyId: issue.companyId,
         runId: req.body.targetRunId,
@@ -15689,10 +15729,27 @@ export function issueRoutes(
             queueId: req.body.queueId,
             revision: req.body.revision,
           });
-          if (locked.queue.protocol !== "paperclip_runner_v1") {
+          const externalAdapter = liveOmpSteeringAdapter(locked.activeRun);
+          if (locked.queue.protocol !== "paperclip_runner_v1" && !externalAdapter?.steer) {
             throw conflict("This runner does not support same-turn steering", {
               code: "steering_unsupported",
             });
+          }
+          if (externalAdapter) {
+            if (!externalAdapter.getSteeringState) {
+              throw conflict("This runner does not support same-turn steering", { code: "steering_unsupported" });
+            }
+            let state: "available" | "temporarily_unavailable";
+            try {
+              state = externalAdapter.getSteeringState(locked.activeRun.id);
+            } catch {
+              state = "temporarily_unavailable";
+            }
+            if (state !== "available" && priorIdentity?.status !== "pending" && priorIdentity?.status !== "accepted") {
+              throw conflict("Steering is temporarily unavailable for this run", {
+                code: "steering_temporarily_unavailable", retryable: true,
+              });
+            }
           }
           const entry = locked.queue.entries.find(
             (candidate) => candidate.comment.id === commentId,
@@ -15709,18 +15766,33 @@ export function issueRoutes(
             });
           }
           steeringDeliveryAttempted = true;
-          const acknowledgement =
-            (await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
-              companyId: issue.companyId, runId: locked.activeRun.id, messageId: commentId,
-            })) ??
-            (await steerNativeSession({
-              runId: locked.activeRun.id,
-              message: entry.comment.body,
-              correlationId: commentId,
-              onAcknowledged: steeringIdentity
-                ? () => reconcileSteeredIdentity(db, steeringIdentity)
-                : undefined,
-            }));
+          const storedAcknowledgement = await storedSteeringAcknowledgement(tx, steeringIdentity ?? {
+            companyId: issue.companyId, runId: locked.activeRun.id, messageId: commentId,
+          });
+          const steeringInput = {
+            runId: locked.activeRun.id,
+            message: entry.comment.body,
+            correlationId: commentId,
+            onAcknowledged: steeringIdentity
+              ? externalAdapter
+                ? async () => {
+                    // The adapter may await this callback before returning.
+                    // Reconcile on another tick: this transaction already owns
+                    // the issue/run locks, and the normal ack commits identity
+                    // here; late acknowledgements reconcile after timeout.
+                    queueMicrotask(() => {
+                      void reconcileSteeredIdentity(db, steeringIdentity).catch((error) => {
+                        console.error("Failed to reconcile external steering identity", error);
+                      });
+                    });
+                  }
+                : () => reconcileSteeredIdentity(db, steeringIdentity)
+              : undefined,
+          };
+          const acknowledgement = storedAcknowledgement ??
+            (externalAdapter?.steer
+              ? await externalAdapter.steer(steeringInput)
+              : await steerNativeSession(steeringInput));
           if (steeringIdentity)
             await acceptSteeredIdentity(tx, steeringIdentity);
           acknowledgedTurnId = acknowledgement.turnId;
@@ -15777,15 +15849,19 @@ export function issueRoutes(
           });
         });
       } catch (error) {
-        const uncertain =
-          steeringDeliveryAttempted &&
-          (!(error instanceof NativeSessionSteeringError) ||
-            error.code === "steering_timeout");
+        const steeringCode = error instanceof NativeSessionSteeringError
+          ? error.code
+          : error instanceof Error && "code" in error && typeof error.code === "string"
+            && ["steering_temporarily_unavailable", "steering_timeout", "steering_rejected"].includes(error.code)
+            ? error.code
+            : null;
+        const uncertain = steeringDeliveryAttempted &&
+          (steeringCode === null || steeringCode === "steering_timeout");
         if (steeringIdentity && !uncertain)
           await rejectSteeredIdentity(db, steeringIdentity);
 
-        if (error instanceof NativeSessionSteeringError) {
-          throw conflict(error.message, { code: error.code, retryable: true });
+        if (steeringCode && error instanceof Error) {
+          throw conflict(error.message, { code: steeringCode, retryable: true });
         }
         throw error;
       }

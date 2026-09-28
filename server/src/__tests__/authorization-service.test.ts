@@ -332,6 +332,36 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("grants a standard-trust CEO company configuration permissions without explicit grants", async () => {
+    const company = await createCompany(db, "CeoCompanyPermissions");
+    const ceo = await createAgent(db, company.id, { role: "ceo", permissions: {} });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: ceo.id,
+      status: "active",
+      membershipRole: "member",
+    });
+    const peer = await createAgent(db, company.id);
+    const authz = authorizationService(db);
+    const actor = { type: "agent" as const, agentId: ceo.id, companyId: company.id, source: "agent_key" as const };
+
+    for (const [action, resource, scope] of [
+      ["agent_config:read", { type: "agent", companyId: company.id, agentId: peer.id }],
+      ["agent_config:update", { type: "agent", companyId: company.id, agentId: peer.id }, { requiresChangeGrant: true }],
+      ["skill_config:update", { type: "company", companyId: company.id }],
+      ["agents:configure", { type: "agent", companyId: company.id, agentId: peer.id }],
+      ["agents:create", { type: "company", companyId: company.id }],
+      ["skills:create", { type: "company", companyId: company.id }],
+      ["tasks:manage_active_checkouts", { type: "issue", companyId: company.id, assigneeAgentId: peer.id }],
+    ] as const) {
+      await expect(authz.decide({ actor, action, resource, scope })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_role_default",
+      });
+    }
+  });
+
   it("enforces direct or consented suggest grants for skill configuration changes", async () => {
     const company = await createCompany(db, "SkillChangeGrant");
     const directAgent = await createAgent(db, company.id);
@@ -1928,22 +1958,6 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision).toMatchObject({
       allowed: false,
       reason: "deny_company_boundary",
-    });
-  });
-
-  it("preserves legacy CEO agent creator authority", async () => {
-    const company = await createCompany(db, "Legacy");
-    const actorAgent = await createAgent(db, company.id, { role: "ceo" });
-
-    const decision = await authorizationService(db).decide({
-      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
-      action: "agents:create",
-      resource: { type: "company", companyId: company.id },
-    });
-
-    expect(decision).toMatchObject({
-      allowed: true,
-      reason: "allow_legacy_agent_creator",
     });
   });
 

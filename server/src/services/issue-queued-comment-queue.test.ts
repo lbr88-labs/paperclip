@@ -47,7 +47,7 @@ describe("decideQueuedCommentQueueSteering", () => {
       queuedCommentCount: 1,
     });
 
-    expect(decision).toEqual({ protocol: "paperclip_runner_v1", kind: "probe", steeringRunId: "run-1" });
+    expect(decision).toEqual({ protocol: "paperclip_runner_v1", kind: "probe", steeringRunId: "run-1", provider: "native" });
   });
 
   // Acceptance-criterion fact pattern: a deferred queue whose active run
@@ -65,8 +65,21 @@ describe("decideQueuedCommentQueueSteering", () => {
       queuedCommentCount: 1,
     });
 
-    expect(decision).toEqual({ protocol: "paperclip_runner_v1", kind: "probe", steeringRunId: "run-1" });
+    expect(decision).toEqual({ protocol: "paperclip_runner_v1", kind: "probe", steeringRunId: "run-1", provider: "native" });
   });
+
+  it("probes the dispatched OMP adapter while retaining legacy interruption", () => {
+    const decision = decideQueuedCommentQueueSteering({
+      state: "deferred",
+      queueRunRuntimeMode: null,
+      activeRun: { id: "run-1", runtimeMode: "legacy" },
+      activeRunAdapterType: "omp_local",
+      assignedAgentAdapterType: "codex_local",
+      queuedCommentCount: 1,
+    });
+    expect(decision).toEqual({ protocol: "legacy", kind: "probe", provider: "omp_local", steeringRunId: "run-1" });
+  });
+
 });
 
 describe("buildQueuedCommentQueueSnapshot entry permissions", () => {

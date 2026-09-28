@@ -1,5 +1,11 @@
 # paperclipai
 
+## Unreleased
+
+### Patch Changes
+
+- Uninstall validates and locks the managed CLI store before stopping the background service, so an unverified or busy store leaves the running service untouched.
+
 ## 0.3.1
 
 ### Patch Changes

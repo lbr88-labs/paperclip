@@ -29,7 +29,9 @@ import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { getServerAdapter, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
+import { queuedCommentIdsFromWakePayload } from "../services/issue-queued-comment-queue.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -72,6 +74,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     // Each case owns the entire disposable database. Clear the full company
     // graph, including attribution rows and constraints added by migrations.
     await db.execute(sql`TRUNCATE TABLE companies CASCADE`);
+    unregisterServerAdapter("omp_local");
   });
 
   afterAll(async () => {
@@ -639,12 +642,12 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("running");
   });
 
-  it.each([null, "stopped-target", "system-receipt"])("sends a stopped legacy queue once with target %s", async (target) => {
+  it.each([null, "stopped-target", "system-receipt", "omp-local"])("sends a stopped legacy queue once with target %s", async (target) => {
     const seeded = await seedQueue();
     if (target === "system-receipt") await db.update(agentWakeupRequests).set({
       requestedByActorType: "system", requestedByActorId: "heartbeat",
     }).where(eq(agentWakeupRequests.id, seeded.wakeId));
-    await db.update(agents).set({ adapterType: "claude_local",
+    await db.update(agents).set({ adapterType: target === "omp-local" ? "omp_local" : "claude_local",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     }).where(eq(agents.id, seeded.agentId));
     await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "succeeded",
@@ -1237,6 +1240,201 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       .delete(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
       .send({ queueId: seeded.wakeId, revision: initial.body.revision });
     expect(discard.status).toBe(403);
+  });
+
+  async function seedOmpQueue() {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "omp_local" }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({
+      runtimeMode: "legacy",
+      runnerProfileJson: { adapterDispatch: { adapterType: "omp_local" } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    return seeded;
+  }
+
+  it("steers an OMP message once into the active run and keeps its sibling queued across retry", async () => {
+    const seeded = await seedOmpQueue();
+    await seedDispatchIdentity(seeded);
+    const onAcknowledged = vi.fn(async () => {});
+    const steer = vi.fn(async (input: { runId: string; message: string; correlationId: string; onAcknowledged?: () => Promise<void> }) => {
+      expect(input.runId).toBe(seeded.runId);
+      expect(input.message).toBe("First queued message");
+      expect(input.correlationId).toBe(seeded.commentIds[0]);
+      await input.onAcknowledged?.();
+      await onAcknowledged();
+      return { turnId: `steer:${input.correlationId}` };
+    });
+    registerServerAdapter({
+      ...getServerAdapter("process"),
+      type: "omp_local",
+      getSteeringState: (runId) => runId === seeded.runId ? "available" : "temporarily_unavailable",
+      steer,
+    });
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(initial.body).toMatchObject({ protocol: "legacy", steeringDisposition: "available" });
+    const payload = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision };
+    const first = await request(client)
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send(payload).expect(200);
+    expect(first.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
+    const retry = await request(client)
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send(payload).expect(200);
+    expect(retry.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id)).toEqual([seeded.commentIds[1]]);
+    expect(steer).toHaveBeenCalledOnce();
+    expect(onAcknowledged).toHaveBeenCalledOnce();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+    expect(run.status).toBe("running");
+    expect((run.resultJson?.queuedSteeringAcknowledgements as Record<string, unknown> | undefined)?.[seeded.commentIds[0]]).toMatchObject({
+      queueId: seeded.wakeId, turnId: `steer:${seeded.commentIds[0]}`,
+    });
+    const [identity] = await db.select().from(runIdentityContexts)
+      .where(eq(runIdentityContexts.messageId, seeded.commentIds[0]));
+    expect(identity).toMatchObject({ cause: "steering", status: "accepted", responsibleUserId: "queue-owner" });
+    expect(run.activeIdentityContextId).toBe(identity.id);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.status).toBe("deferred_issue_execution");
+    expect(queuedCommentIdsFromWakePayload(wake.payload)).toEqual([seeded.commentIds[1]]);
+  });
+
+  it.each(["no hook", "not ready", "remote JSON", "different dispatched adapter"] as const)(
+    "keeps OMP messages queued when steering is %s",
+    async (scenario) => {
+      const seeded = await seedOmpQueue();
+      const steer = vi.fn(async () => ({ turnId: "should-not-send" }));
+      registerServerAdapter({
+        ...getServerAdapter("process"), type: "omp_local",
+        ...(scenario === "no hook" ? {} : {
+          steer,
+          getSteeringState: () => scenario === "not ready" || scenario === "remote JSON"
+            ? "temporarily_unavailable" as const : "available" as const,
+        }),
+      });
+      if (scenario === "different dispatched adapter") {
+        await db.update(heartbeatRuns).set({
+          runnerProfileJson: { adapterDispatch: { adapterType: "claude_local" } },
+        }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      const client = app(seeded.companyId);
+      const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      expect(initial.body.steeringDisposition).toBe(
+        scenario === "no hook" || scenario === "different dispatched adapter"
+          ? "unsupported" : "temporarily_unavailable",
+      );
+      const response = await request(client)
+        .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+        .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+      expect(response.status).toBe(409);
+      expect(response.body.details?.code).toBe(
+        scenario === "no hook" || scenario === "different dispatched adapter"
+          ? "steering_unsupported" : "steering_temporarily_unavailable",
+      );
+      expect(steer).not.toHaveBeenCalled();
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+      expect(queuedCommentIdsFromWakePayload(wake.payload)).toEqual(seeded.commentIds);
+    },
+  );
+
+  it("rechecks the live OMP transport before delivering a previously enabled action", async () => {
+    const seeded = await seedOmpQueue();
+    let ready = true;
+    const steer = vi.fn(async () => ({ turnId: "must-not-send" }));
+    registerServerAdapter({
+      ...getServerAdapter("process"), type: "omp_local", steer,
+      getSteeringState: () => ready ? "available" : "temporarily_unavailable",
+    });
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(initial.body.steeringDisposition).toBe("available");
+    ready = false;
+    const response = await request(client)
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send({ queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision });
+    expect(response.status).toBe(409);
+    expect(response.body.details?.code).toBe("steering_temporarily_unavailable");
+    expect(steer).not.toHaveBeenCalled();
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(queuedCommentIdsFromWakePayload(wake.payload)).toEqual(seeded.commentIds);
+  });
+
+  it("recovers a timed-out OMP acknowledgement by correlation id without a second injection", async () => {
+    const seeded = await seedOmpQueue();
+    await seedDispatchIdentity(seeded);
+    let ready = true;
+    let injections = 0;
+    const accepted = new Map<string, string>();
+    const steer = vi.fn(async (input: { correlationId: string; onAcknowledged?: () => Promise<void> }) => {
+      const cached = accepted.get(input.correlationId);
+      if (cached) {
+        await input.onAcknowledged?.();
+        return { turnId: cached };
+      }
+      if (!ready) throw Object.assign(new Error("No live OMP process"), { code: "steering_temporarily_unavailable" });
+      injections++;
+      const turnId = `steer:${input.correlationId}`;
+      accepted.set(input.correlationId, turnId);
+      throw Object.assign(new Error("Reply timed out after acceptance"), { code: "steering_timeout" });
+    });
+    registerServerAdapter({
+      ...getServerAdapter("process"), type: "omp_local", steer,
+      getSteeringState: () => ready ? "available" : "temporarily_unavailable",
+    });
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    const payload = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision };
+    const first = await request(client)
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send(payload);
+    expect(first.body.details?.code).toBe("steering_timeout");
+    const [beforeRetry] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(queuedCommentIdsFromWakePayload(beforeRetry.payload)).toEqual(seeded.commentIds);
+    ready = false;
+    const retried = await request(client)
+      .post(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}/steer`)
+      .send(payload).expect(200);
+    expect(retried.body.entries.map((entry: { comment: { id: string } }) => entry.comment.id))
+      .toEqual([seeded.commentIds[1]]);
+    expect(steer).toHaveBeenCalledTimes(2);
+    expect(injections).toBe(1);
+  });
+
+  it("recovers a timed-out OMP approval when its interaction identity survives transport loss", async () => {
+    const seeded = await seedResponseQueue();
+    await db.update(agents).set({ adapterType: "omp_local" }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({
+      runnerProfileJson: { adapterDispatch: { adapterType: "omp_local" } },
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await seedDispatchIdentity(seeded);
+    let ready = true;
+    let injections = 0;
+    const accepted = new Map<string, string>();
+    registerServerAdapter({
+      ...getServerAdapter("process"), type: "omp_local",
+      getSteeringState: () => ready ? "available" : "temporarily_unavailable",
+      steer: async ({ correlationId }) => {
+        const cached = accepted.get(correlationId);
+        if (cached) return { turnId: cached };
+        if (!ready) throw Object.assign(new Error("No live OMP process"), { code: "steering_temporarily_unavailable" });
+        injections++;
+        accepted.set(correlationId, `steer:${correlationId}`);
+        throw Object.assign(new Error("Reply timed out after acceptance"), { code: "steering_timeout" });
+      },
+    });
+    const client = app(seeded.companyId);
+    const initial = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(initial.body.entries[0].comment.id).toBe(seeded.interactionId);
+    const payload = { queueId: seeded.wakeId, targetRunId: seeded.runId, revision: initial.body.revision };
+    const endpoint = `/api/issues/${seeded.issueId}/queued-comments/${seeded.interactionId}/steer`;
+    const first = await request(client).post(endpoint).send(payload).expect(409);
+    expect(first.body.details?.code).toBe("steering_timeout");
+    ready = false;
+    const retry = await request(client).post(endpoint).send(payload).expect(200);
+    expect(retry.body.entries).toHaveLength(0);
+    expect(injections).toBe(1);
+    const [identity] = await db.select().from(runIdentityContexts)
+      .where(eq(runIdentityContexts.messageId, seeded.interactionId));
+    expect(identity).toMatchObject({ correlationId: `interaction:${seeded.interactionId}`, status: "accepted" });
   });
 
   it("leaves the selected row queued when no native steering session is attached", async () => {

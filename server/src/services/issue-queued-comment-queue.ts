@@ -103,8 +103,7 @@ export type QueuedCommentQueueProtocol = "paperclip_runner_v1" | "legacy";
 export type QueuedCommentQueueSteeringDecision =
   | { protocol: QueuedCommentQueueProtocol; kind: "unsupported" }
   | { protocol: QueuedCommentQueueProtocol; kind: "temporarily_unavailable" }
-  /** Only the caller can probe the live runner. `steeringRunId` names the run to probe. */
-  | { protocol: "paperclip_runner_v1"; kind: "probe"; steeringRunId: string };
+  | { protocol: QueuedCommentQueueProtocol; kind: "probe"; steeringRunId: string; provider: "native" | "omp_local" };
 
 /**
  * Decides the queue protocol and the steering answer for one queued-comment
@@ -113,12 +112,9 @@ export type QueuedCommentQueueSteeringDecision =
  * caller that builds a queue response must call this function instead of
  * repeating the rule.
  *
- * When the decision is `"probe"`, only the caller can answer the question:
- * it must ask the live runner (through a call such as
- * `getNativeSessionSteeringState`) and fall back to
- * `"temporarily_unavailable"` on failure. A caller that never probes the
- * live runner must answer `"temporarily_unavailable"` for a `"probe"`
- * decision instead.
+ * When the decision is `"probe"`, the caller must ask the live runner or
+ * adapter and fall back to `"temporarily_unavailable"` on probe failure.
+ * A caller that cannot probe must also answer `"temporarily_unavailable"`.
  */
 export function decideQueuedCommentQueueSteering(facts: {
   state: "deferred" | "queued" | null;
@@ -126,6 +122,8 @@ export function decideQueuedCommentQueueSteering(facts: {
   queueRunRuntimeMode: string | null;
   /** The currently running turn, if any. Read only when `state` is `"deferred"`. */
   activeRun: { id: string; runtimeMode: string | null } | null;
+  /** Persisted at dispatch, rather than inferred from the agent's current settings. */
+  activeRunAdapterType?: string | null;
   assignedAgentAdapterType: string | null;
   queuedCommentCount: number;
 }): QueuedCommentQueueSteeringDecision {
@@ -142,7 +140,10 @@ export function decideQueuedCommentQueueSteering(facts: {
       ? "paperclip_runner_v1"
       : "legacy";
 
-  if (protocol !== "paperclip_runner_v1") {
+  const externalOmp = facts.state === "deferred"
+    && facts.activeRun?.runtimeMode === "legacy"
+    && facts.activeRunAdapterType === "omp_local";
+  if (protocol !== "paperclip_runner_v1" && !externalOmp) {
     return { protocol, kind: "unsupported" };
   }
 
@@ -151,7 +152,7 @@ export function decideQueuedCommentQueueSteering(facts: {
     return { protocol, kind: "temporarily_unavailable" };
   }
 
-  return { protocol, kind: "probe", steeringRunId: steeringRun.id };
+  return { protocol, kind: "probe", steeringRunId: steeringRun.id, provider: externalOmp ? "omp_local" : "native" };
 }
 
 type QueuedCommentQueueEntryFacts = {
