@@ -13,7 +13,6 @@ export const SANDBOX_INSTALL_COMMAND = "npm install -g @openai/codex";
 export const DEFAULT_CODEX_LOCAL_MODEL = PAPERCLIP_RUNNER_DEFAULT_MODELS.codex;
 export const DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX = true;
 export const CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS = [
-  "gpt-6.1-sol",
   "gpt-6-astra",
   "gpt-6-sol",
   "gpt-6-luna",
@@ -86,6 +85,20 @@ export function codexLocalReasoningEffortsForModel(
   }
 }
 
+export function normalizeCodexLocalReasoningEffort(
+  model: string | null | undefined,
+  effort: unknown,
+): string {
+  if (typeof effort !== "string") return "";
+  const normalizedEffort = effort.trim();
+  if (!normalizedEffort) return "";
+  const normalizedModel = normalizeCodexModel(model);
+  if (normalizedModel !== "gpt-6.1-sol") return normalizedEffort;
+  return CODEX_LOCAL_MAX_REASONING_EFFORTS.find(
+    (supportedEffort) => supportedEffort === normalizedEffort,
+  ) ?? "";
+}
+
 export function isCodexLocalKnownModel(model: string | null | undefined): boolean {
   const normalizedModel = normalizeModelId(model);
   if (!normalizedModel) return false;
@@ -141,7 +154,7 @@ Core fields:
 - modelReasoningEffort (string, optional): reasoning effort override passed via -c model_reasoning_effort=...; GPT-6.1 Sol supports low|medium|high|xhigh|max; GPT-6 Astra/Sol and GPT-5.6 Sol/Terra support low|medium|high|xhigh|max|ultra; GPT-6 Luna and GPT-5.6 Luna support low|medium|high|xhigh|max
 - promptTemplate (string, optional): run prompt template
 - search (boolean, optional): run codex with --search
-- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6.1 Sol, GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
+- fastMode (boolean, optional): enable Codex Fast mode; supported on GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and passed through for manual model IDs
 - dangerouslyBypassApprovalsAndSandbox (boolean, optional): use Codex's no-approval, no-sandbox mode in CLI and ACP when networking is allowed; explicit ACP env.INITIAL_AGENT_MODE and explicit network denial take precedence
 - command (string, optional): defaults to "codex"
 - extraArgs (string[], optional): additional CLI args
@@ -172,9 +185,10 @@ Notes:
 - Paperclip injects desired local skills into the effective CODEX_HOME/skills/ directory at execution time so Codex can discover "$paperclip" and related skills without polluting the project working directory. For new and updated agents, Paperclip assigns an isolated managed home at ~/.paperclip/instances/<id>/companies/<companyId>/agents/<agentId>/codex-home/skills/; when CODEX_HOME is explicitly overridden in adapter config, that override is used instead.
 - New and updated codex_local agents persist an empty OPENAI_API_KEY override by default so a host-level OPENAI_API_KEY cannot leak into Codex runs through process inheritance. Explicit CODEX_HOME overrides must not point at the shared company codex-home, $CODEX_HOME, or ~/.codex.
 - Some model/tool combinations reject certain effort levels (for example minimal with web search enabled).
-- Fast mode is supported on GPT-6.1 Sol, GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
+- Fast mode is supported on GPT-6 (astra/sol/luna), GPT-5.6 (sol/terra/luna), GPT-5.5, GPT-5.4 and manual model IDs. When enabled for those models, Paperclip applies \`service_tier="fast"\` and \`features.fast_mode=true\`.
 - When Paperclip realizes a workspace/runtime for a run, it injects PAPERCLIP_WORKSPACE_* and PAPERCLIP_RUNTIME_* env vars for agent-side tooling.
 - The ACP engine enables network access in its workspace sandbox on each turn by default. When dangerouslyBypassApprovalsAndSandbox is true and networking is allowed, it selects codex-acp's agent-full-access mode. An explicit env.INITIAL_AGENT_MODE wins over the bypass setting; without one, explicit sandbox_workspace_write.network_access=false in extraArgs (or env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS="false") keeps the workspace sandbox. Execution-target network denial remains enforced by the target. The bundled ACP patch is needed because upstream mode presets override Codex config.toml on every turn.
 - The CLI engine uses the dangerous bypass flag when configured, otherwise it uses a writable workspace sandbox with network access for unattended work and Paperclip API calls. Explicit sandbox modes/profiles and network overrides in extraArgs retain their meaning. An execution-target network denial remains enforced.
 - Codex ACP is the preferred auto lane when Node >=24.11.0 and the Codex ACP server are available. It reuses shared ACP prompt/runtime guidance, selected skill materialization into CODEX_HOME/skills, model/reasoning/fast-mode session config, and existing quota-window reporting. Missing ACP prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
+- For GPT-6.1 Sol, Paperclip normalizes all structured ACP effort aliases to low|medium|high|xhigh|max. Operator-provided extraArgs or env.CODEX_CONFIG remain direct Codex overrides outside that normalization.
 `;

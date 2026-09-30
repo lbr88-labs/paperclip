@@ -7,6 +7,13 @@ import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "@paperclipai/shared/node-version";
 import {
+  CODEX_ACP_PATCH_RELATIVE_PATH,
+  assertCodexAcpLock,
+  patchCodexAcpPackages,
+  verifyCodexAcpPayload,
+  writeCodexNpmOverrides,
+} from "./acpx-runtime-integrity.js";
+import {
   addManagedPathBlock,
   assertManagedShimWritable,
   buildNextManifest,
@@ -190,6 +197,7 @@ export async function installNpmPayload(
 ): Promise<{ payloadPath: string; reused: boolean }> {
   const payloadPath = payloadPathFor(paths, "npm", version);
   if (fs.existsSync(payloadPath)) {
+    verifyCodexAcpPayload(payloadPath);
     await smokePayload(payloadPath, version, runCommand);
     return { payloadPath, reused: true };
   }
@@ -211,13 +219,13 @@ export async function installNpmPayload(
       `registry=${PUBLIC_NPM_REGISTRY}\n@paperclipai:registry=${PUBLIC_NPM_REGISTRY}\n`,
       { mode: 0o600 },
     );
+    writeCodexNpmOverrides(stagingPath, { paperclipai: version });
     await runCommand(
       "npm",
       [
         "install",
         "--prefix",
         stagingPath,
-        `paperclipai@${version}`,
         `--registry=${PUBLIC_NPM_REGISTRY}`,
         `--@paperclipai:registry=${PUBLIC_NPM_REGISTRY}`,
         "--no-audit",
@@ -229,6 +237,12 @@ export async function installNpmPayload(
         maxBuffer: 16 * 1024 * 1024,
       },
     );
+    assertCodexAcpLock(stagingPath);
+    patchCodexAcpPackages(
+      stagingPath,
+      path.join(stagingPath, "node_modules", "paperclipai", CODEX_ACP_PATCH_RELATIVE_PATH),
+    );
+    verifyCodexAcpPayload(stagingPath);
     await smokePayload(stagingPath, version, runCommand);
     fs.renameSync(stagingPath, payloadPath);
     return { payloadPath, reused: false };
@@ -251,6 +265,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
   const payloadPath = payloadPathFor(paths, "git", identifier);
   if (fs.existsSync(payloadPath)) {
     const metadata = JSON.parse(fs.readFileSync(path.join(payloadPath, "node_modules", "paperclipai", "package.json"), "utf8")) as { version: string };
+    verifyCodexAcpPayload(payloadPath);
     await smokePayload(payloadPath, metadata.version, runCommand);
     return { payloadPath, reused: true, version: metadata.version };
   }
@@ -311,6 +326,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     if (!cliTarball || workspaceTarballs.length !== workspacePackages.length) {
       throw new Error(`Git install packaging produced ${workspaceTarballs.length} workspace tarballs; expected ${workspacePackages.length}.`);
     }
+    writeCodexNpmOverrides(stagedPayload);
     await runCommand("npm", ["install", "--prefix", stagedPayload, path.join(stagingRoot, cliTarball), ...workspaceTarballs.map((entry) => path.join(stagingRoot, entry)), "--no-audit", "--no-fund"], { cwd: stagingRoot, maxBuffer: 32 * 1024 * 1024 });
     // npm does not run postinstall for a bundled dependency nested in a staged
     // tarball. The platform package ships its shared-library symlink manifest
@@ -324,6 +340,12 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
         throw new Error("Bundled PostgreSQL native libraries are missing required symlinks.");
       }
     }
+    assertCodexAcpLock(stagedPayload);
+    patchCodexAcpPackages(
+      stagedPayload,
+      path.join(checkoutPath, CODEX_ACP_PATCH_RELATIVE_PATH),
+    );
+    verifyCodexAcpPayload(stagedPayload);
     await smokePayload(stagedPayload, metadata.version, runCommand);
     fs.renameSync(stagedPayload, payloadPath);
     return { payloadPath, reused: false, version: metadata.version };

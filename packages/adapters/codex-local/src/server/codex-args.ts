@@ -3,6 +3,7 @@ import {
   CODEX_LOCAL_FAST_MODE_SUPPORTED_MODELS,
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   isCodexLocalFastModeSupported,
+  normalizeCodexLocalReasoningEffort,
   normalizeCodexModel,
 } from "../index.js";
 
@@ -42,10 +43,10 @@ export function buildCodexExecArgs(
 ): BuildCodexExecArgsResult {
   const record = asRecord(config);
   const model = normalizeCodexModel(asString(record.model, ""));
-  const modelReasoningEffort = asString(
-    record.modelReasoningEffort,
-    asString(record.reasoningEffort, ""),
-  ).trim();
+  const modelReasoningEffort = normalizeCodexLocalReasoningEffort(
+    model,
+    record.modelReasoningEffort ?? record.reasoningEffort,
+  );
   const search = asBoolean(record.search, false);
   const fastModeRequested = asBoolean(record.fastMode, false);
   const fastModeApplied = fastModeRequested && isCodexLocalFastModeSupported(model);

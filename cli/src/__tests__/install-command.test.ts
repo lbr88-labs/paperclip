@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,6 +7,7 @@ import {
   type CommandRunner,
   installCommand,
   installGitPayload,
+  installNpmPayload,
   resolveGitHubRef,
   resolveGitInstallRequest,
   resolveGitInstallWorkspacePackages,
@@ -26,8 +28,95 @@ import {
 } from "../install-store.js";
 import { resolveCliVersion } from "../version.js";
 import { systemdServiceName } from "../services/service-manager.js";
+import {
+  CODEX_ACP_PATCH_RELATIVE_PATH,
+  CODEX_ACP_VERSION,
+  CODEX_RUNTIME_VERSION,
+} from "../commands/acpx-runtime-integrity.js";
 
 const ORIGINAL_ENV = { ...process.env };
+const PATCH_MARKERS = [
+  "if (!context.isToolApproval && this.shouldUseAcpElicitation(params))",
+  "rawInput: { serverName: params.serverName }",
+  "function paperclipBaseInstructions(request)",
+  "function paperclipSandboxPolicy(sandboxPolicy)",
+  "baseInstructions: paperclipBaseInstructions(request)",
+  '"include_apps_instructions": false',
+  'process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1"',
+  'const isolated = process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1"',
+  "paperclipSandboxPolicy(agentMode.sandboxPolicy)",
+];
+const adapterRequire = createRequire(
+  new URL("../../../packages/adapters/codex-local/package.json", import.meta.url),
+);
+const patchedAcpRuntimePath = adapterRequire.resolve("@agentclientprotocol/codex-acp");
+const patchedAcpRuntimeSource = fs.readFileSync(patchedAcpRuntimePath, "utf8");
+
+function copyCodexAcpPatch(destination: string): void {
+  const patchPath = path.join(destination, CODEX_ACP_PATCH_RELATIVE_PATH);
+  fs.mkdirSync(path.dirname(patchPath), { recursive: true });
+  fs.copyFileSync(
+    new URL("../../../patches/@agentclientprotocol__codex-acp@1.6.2.patch", import.meta.url),
+    patchPath,
+  );
+}
+
+function writeCodexRuntimePayload(
+  payloadPath: string,
+  {
+    version = "0.3.1",
+    acpVersion = CODEX_ACP_VERSION,
+    codexVersion = CODEX_RUNTIME_VERSION,
+    runtimeSource = patchedAcpRuntimeSource,
+  }: {
+    version?: string;
+    acpVersion?: string;
+    codexVersion?: string;
+    runtimeSource?: string;
+  } = {},
+): void {
+  const nodeModules = path.join(payloadPath, "node_modules");
+  const cliPackage = path.join(nodeModules, "paperclipai");
+  fs.mkdirSync(path.join(cliPackage, "dist"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cliPackage, "package.json"),
+    JSON.stringify({ name: "paperclipai", version }),
+  );
+  fs.writeFileSync(path.join(cliPackage, "dist", "index.js"), "#!/usr/bin/env node\n");
+  copyCodexAcpPatch(cliPackage);
+
+  const acpPackage = path.join(nodeModules, "@agentclientprotocol", "codex-acp");
+  fs.mkdirSync(path.join(acpPackage, "dist"), { recursive: true });
+  fs.writeFileSync(
+    path.join(acpPackage, "package.json"),
+    JSON.stringify({
+      name: "@agentclientprotocol/codex-acp",
+      version: acpVersion,
+      dependencies: { "@openai/codex": CODEX_RUNTIME_VERSION },
+    }),
+  );
+  fs.writeFileSync(path.join(acpPackage, "dist", "index.js"), runtimeSource);
+
+  const codexPackage = path.join(nodeModules, "@openai", "codex");
+  fs.mkdirSync(codexPackage, { recursive: true });
+  fs.writeFileSync(
+    path.join(codexPackage, "package.json"),
+    JSON.stringify({ name: "@openai/codex", version: codexVersion }),
+  );
+  fs.writeFileSync(
+    path.join(payloadPath, "package-lock.json"),
+    JSON.stringify({
+      name: "paperclip-managed-runtime-stage",
+      lockfileVersion: 3,
+      packages: {
+        "": { version: "0.0.0" },
+        "node_modules/@agentclientprotocol/codex-acp": { version: acpVersion },
+        "node_modules/@openai/codex": { version: codexVersion },
+        "node_modules/paperclipai": { version },
+      },
+    }),
+  );
+}
 
 describe("managed install commands", () => {
   let root: string;
@@ -95,14 +184,62 @@ describe("managed install commands", () => {
     const sha = "b".repeat(40);
     const paths = resolveInstallStorePaths();
     const payloadPath = payloadPathFor(paths, "git", sha.slice(0, 12));
-    const packageRoot = path.join(payloadPath, "node_modules", "paperclipai");
-    fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true });
-    fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" }));
-    fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n");
+    writeCodexRuntimePayload(payloadPath);
     const runCommand = vi.fn(async (_file: string, _args: string[]) => ({ stdout: "0.3.1\n", stderr: "" }));
     await expect(installGitPayload("paperclipai/paperclip", sha, runCommand, paths)).resolves.toEqual({ payloadPath, reused: true, version: "0.3.1" });
     expect(runCommand).toHaveBeenCalledOnce();
     expect(runCommand.mock.calls[0]?.[0]).toBe(process.execPath);
+  });
+
+  it("fails closed when a reused npm payload has the wrong Codex version", async () => {
+    const version = "2026.720.0";
+    const paths = resolveInstallStorePaths();
+    const payloadPath = payloadPathFor(paths, "npm", version);
+    writeCodexRuntimePayload(payloadPath, { version, codexVersion: "0.156.0" });
+    const before = fs.readFileSync(
+      path.join(payloadPath, "node_modules", "@openai", "codex", "package.json"),
+      "utf8",
+    );
+    const runCommand = vi.fn(async () => ({ stdout: version + "\n", stderr: "" }));
+
+    await expect(installNpmPayload(version, runCommand, paths)).rejects.toThrow(
+      "lock must contain exactly @openai/codex@0.159.1",
+    );
+
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(
+      fs.readFileSync(
+        path.join(payloadPath, "node_modules", "@openai", "codex", "package.json"),
+        "utf8",
+      ),
+    ).toBe(before);
+  });
+
+  it("fails closed when a reused Git payload contains patch text only in comments", async () => {
+    const sha = "d".repeat(40);
+    const paths = resolveInstallStorePaths();
+    const payloadPath = payloadPathFor(paths, "git", sha.slice(0, 12));
+    writeCodexRuntimePayload(payloadPath, {
+      runtimeSource:
+        '"use strict";\n' + PATCH_MARKERS.map((marker) => "// " + marker).join("\n") + "\n",
+    });
+    const runtimePath = path.join(
+      payloadPath,
+      "node_modules",
+      "@agentclientprotocol",
+      "codex-acp",
+      "dist",
+      "index.js",
+    );
+    const before = fs.readFileSync(runtimePath, "utf8");
+    const runCommand = vi.fn(async () => ({ stdout: "0.3.1\n", stderr: "" }));
+
+    await expect(
+      installGitPayload("paperclipai/paperclip", sha, runCommand, paths),
+    ).rejects.toThrow("executable runtime digest mismatch");
+
+    expect(runCommand).not.toHaveBeenCalled();
+    expect(fs.readFileSync(runtimePath, "utf8")).toBe(before);
   });
 
   const createGitCheckoutRunCommand = (sha: string) =>
@@ -119,6 +256,11 @@ describe("managed install commands", () => {
         fs.mkdirSync(path.join(checkout, "cli"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "cli", "package.json"), JSON.stringify({ version: "0.3.1" }));
         fs.mkdirSync(path.join(checkout, "scripts"), { recursive: true });
+        fs.mkdirSync(path.join(checkout, "patches"), { recursive: true });
+        fs.copyFileSync(
+          new URL("../../../patches/@agentclientprotocol__codex-acp@1.6.2.patch", import.meta.url),
+          path.join(checkout, CODEX_ACP_PATCH_RELATIVE_PATH),
+        );
         fs.writeFileSync(path.join(checkout, "scripts", "release-package-manifest.json"), JSON.stringify(packages.map(({ dir, name }) => ({ dir, name }))));
         fs.mkdirSync(path.join(checkout, "skills", "paperclip"), { recursive: true });
         fs.writeFileSync(path.join(checkout, "skills", "paperclip", "SKILL.md"), "# Paperclip");
@@ -159,7 +301,16 @@ describe("managed install commands", () => {
         fs.writeFileSync(path.join(args[args.indexOf("--pack-destination") + 1], `${packageName}-0.3.1.tgz`), "package");
         return { stdout: "", stderr: "" };
       }
-      if (file === "npm" && args[0] === "install") { const prefix = args[args.indexOf("--prefix") + 1]; const packageRoot = path.join(prefix, "node_modules", "paperclipai"); fs.mkdirSync(path.join(packageRoot, "dist"), { recursive: true }); fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({ version: "0.3.1" })); fs.writeFileSync(path.join(packageRoot, "dist", "index.js"), "#!/usr/bin/env node\n"); return { stdout: "", stderr: "" }; }
+      if (file === "npm" && args[0] === "install") {
+        const prefix = args[args.indexOf("--prefix") + 1]!;
+        const rootManifest = JSON.parse(fs.readFileSync(path.join(prefix, "package.json"), "utf8"));
+        expect(rootManifest.overrides).toEqual({
+          "@agentclientprotocol/codex-acp": CODEX_ACP_VERSION,
+          "@openai/codex": CODEX_RUNTIME_VERSION,
+        });
+        writeCodexRuntimePayload(prefix);
+        return { stdout: "", stderr: "" };
+      }
       if (file === process.execPath && args[0]?.endsWith("prepare-bundled-package.mjs")) {
         fs.mkdirSync(args[2], { recursive: true });
         fs.writeFileSync(path.join(args[2], "package.json"), JSON.stringify({ name: "@paperclipai/db", version: "0.3.1" }));
@@ -223,9 +374,12 @@ describe("managed install commands", () => {
       if (file === "npm" && args[0] === "view") return { stdout: JSON.stringify(version), stderr: "" };
       if (file === "npm" && args[0] === "install") {
         const prefix = args[args.indexOf("--prefix") + 1];
-        const entrypoint = path.join(prefix, "node_modules", "paperclipai", "dist", "index.js");
-        fs.mkdirSync(path.dirname(entrypoint), { recursive: true });
-        fs.writeFileSync(entrypoint, "#!/usr/bin/env node\n");
+        const rootManifest = JSON.parse(fs.readFileSync(path.join(prefix, "package.json"), "utf8"));
+        expect(rootManifest.overrides).toEqual({
+          "@agentclientprotocol/codex-acp": CODEX_ACP_VERSION,
+          "@openai/codex": CODEX_RUNTIME_VERSION,
+        });
+        writeCodexRuntimePayload(prefix, { version });
         return { stdout: "", stderr: "" };
       }
       if (file === process.execPath && args.at(-1) === "--version") {

@@ -535,7 +535,7 @@ describe("codex_local ACP lane", () => {
     });
   });
 
-  it.each([["gpt-6.1-sol", "max"], ["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s controls to the ACPX Codex target", (model, effort) => {
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s controls to the ACPX Codex target", (model, effort) => {
     expect(buildCodexAcpConfig({
       engine: "acp",
       model,
@@ -546,6 +546,79 @@ describe("codex_local ACP lane", () => {
       modelReasoningEffort: effort,
       fastMode: true,
     });
+  });
+
+  it("does not enable Fast mode for GPT-6.1 Sol without capability proof", () => {
+    expect(buildCodexAcpConfig({
+      engine: "acp",
+      model: "gpt-6.1-sol",
+      modelReasoningEffort: "max",
+      fastMode: true,
+    })).toMatchObject({
+      model: "gpt-6.1-sol",
+      modelReasoningEffort: "max",
+      fastMode: false,
+    });
+  });
+
+  it.each(["none", "minimal", "ultra"])(
+    "omits unsupported GPT-6.1 Sol effort %s from ACP config",
+    (effort) => {
+      const config = buildCodexAcpConfig({
+        engine: "acp",
+        model: "gpt-6.1-sol",
+        modelReasoningEffort: effort,
+      });
+      expect(config).not.toHaveProperty("modelReasoningEffort");
+    },
+  );
+
+  const effortAliases = ["modelReasoningEffort", "reasoningEffort", "thinkingEffort", "effort"] as const;
+  it.each(effortAliases)("accepts supported GPT-6.1 Sol effort through %s", (alias) => {
+    for (const effort of ["low", "medium", "high", "xhigh", "max"] as const) {
+      const config = buildCodexAcpConfig({
+        model: "gpt-6.1-sol",
+        [alias]: effort,
+      });
+      expect(config).toHaveProperty("modelReasoningEffort", effort);
+      for (const otherAlias of ["reasoningEffort", "thinkingEffort", "effort"] as const) {
+        expect(config).not.toHaveProperty(otherAlias);
+      }
+    }
+  });
+
+  it.each(effortAliases)("omits unsupported GPT-6.1 Sol effort aliases through %s", (alias) => {
+    for (const effort of ["none", "minimal", "ultra"] as const) {
+      const config = buildCodexAcpConfig({
+        model: "gpt-6.1-sol",
+        [alias]: effort,
+      });
+      expect(config).not.toHaveProperty("modelReasoningEffort");
+      for (const otherAlias of ["reasoningEffort", "thinkingEffort", "effort"] as const) {
+        expect(config).not.toHaveProperty(otherAlias);
+      }
+    }
+  });
+
+  it("uses ACPX effort alias precedence before applying the GPT-6.1 Sol limit", () => {
+    expect(buildCodexAcpConfig({
+      model: "gpt-6.1-sol",
+      modelReasoningEffort: "high",
+      effort: "ultra",
+    })).toMatchObject({ modelReasoningEffort: "high" });
+    expect(buildCodexAcpConfig({
+      model: "gpt-6.1-sol",
+      modelReasoningEffort: "ultra",
+      thinkingEffort: "high",
+    })).not.toHaveProperty("modelReasoningEffort");
+  });
+
+  it("keeps the GPT-6.1 Sol reasoning effort when supported", () => {
+    expect(buildCodexAcpConfig({
+      engine: "acp",
+      model: "gpt-6.1-sol",
+      modelReasoningEffort: "max",
+    })).toMatchObject({ model: "gpt-6.1-sol", modelReasoningEffort: "max" });
   });
 
   it("normalizes the legacy bare gpt-5.6 alias to gpt-5.6-sol", () => {

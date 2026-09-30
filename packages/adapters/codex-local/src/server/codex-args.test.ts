@@ -9,7 +9,7 @@ describe("buildCodexExecArgs", () => {
     if (resumeSessionId) expect(args.slice(-3)).toEqual(["resume", resumeSessionId, "-"]);
   });
 
-  it.each([["gpt-6.1-sol", "max"], ["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s, its supported reasoning effort, and fast mode", (model, effort) => {
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s, its supported reasoning effort, and fast mode", (model, effort) => {
     const result = buildCodexExecArgs({
       model,
       modelReasoningEffort: effort,
@@ -33,6 +33,22 @@ describe("buildCodexExecArgs", () => {
       "features.fast_mode=true",
       "-",
     ]);
+  });
+
+  it("forwards max and omits unsupported GPT-6.1 Sol effort values", () => {
+    const supported = buildCodexExecArgs({
+      model: "gpt-6.1-sol",
+      modelReasoningEffort: "max",
+    });
+    expect(supported.args).toContain('model_reasoning_effort="max"');
+
+    for (const effort of ["none", "minimal", "ultra"]) {
+      const unsupported = buildCodexExecArgs({
+        model: "gpt-6.1-sol",
+        modelReasoningEffort: effort,
+      });
+      expect(unsupported.args.some((arg) => arg.includes("model_reasoning_effort="))).toBe(false);
+    }
   });
 
   it("rewrites the legacy bare gpt-5.6 alias to gpt-5.6-sol and applies fast mode", () => {
@@ -148,7 +164,7 @@ describe("buildCodexExecArgs", () => {
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-6.1-sol, gpt-6-astra, gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-6-astra, gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
     );
     expect(result.args).toEqual([
       "exec",
@@ -156,6 +172,29 @@ describe("buildCodexExecArgs", () => {
       "--dangerously-bypass-approvals-and-sandbox",
       "--model",
       "gpt-5",
+      "-",
+    ]);
+  });
+
+  it("keeps GPT-6.1 Sol while ignoring Fast mode until capability is proven", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-6.1-sol",
+      modelReasoningEffort: "max",
+      fastMode: true,
+    });
+
+    expect(result.model).toBe("gpt-6.1-sol");
+    expect(result.fastModeRequested).toBe(true);
+    expect(result.fastModeApplied).toBe(false);
+    expect(result.fastModeIgnoredReason).toContain("will ignore it for model gpt-6.1-sol");
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--model",
+      "gpt-6.1-sol",
+      "-c",
+      'model_reasoning_effort="max"',
       "-",
     ]);
   });

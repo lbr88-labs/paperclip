@@ -17,7 +17,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-import { fetchCodexQuota, getQuotaWindows } from "./quota.js";
+import { fetchCodexQuota, fetchCodexRpcQuota, getQuotaWindows } from "./quota.js";
 
 function createChildThatErrorsOnMicrotask(err: Error): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
@@ -76,6 +76,76 @@ describe("CodexRpcClient spawn failures", () => {
     expect(result.source).toBe("codex-rpc");
     expect(result.errorFamily).toBe("refresh_token_expired");
     expect(result.error).toContain("Codex app-server");
+  });
+
+  it("uses read-only never mode and sends only quota RPCs", async () => {
+    const child = new EventEmitter() as ChildProcess;
+    const stdout = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+    const stderr = Object.assign(new EventEmitter(), { setEncoding: vi.fn() });
+    const rpcMethods: string[] = [];
+    const stdin = {
+      write: vi.fn((raw: string) => {
+        const message = JSON.parse(raw) as { id?: number; method: string };
+        rpcMethods.push(message.method);
+        if (typeof message.id === "number") {
+          const result = message.method === "account/rateLimits/read"
+            ? { rateLimits: { limitId: "codex", primary: { usedPercent: 0.25 } } }
+            : {};
+          queueMicrotask(() => stdout.emit("data", JSON.stringify({ id: message.id, result }) + "\n"));
+        }
+        return true;
+      }),
+      end: vi.fn(),
+    };
+    const kill = vi.fn();
+    Object.assign(child, { stdout, stderr, stdin, kill });
+    mockSpawn.mockReturnValue(child);
+
+    const result = await fetchCodexRpcQuota();
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "codex",
+      ["-s", "read-only", "-a", "never", "app-server"],
+      { stdio: ["pipe", "pipe", "pipe"], env: process.env },
+    );
+    expect(rpcMethods).toEqual([
+      "initialize",
+      "initialized",
+      "account/rateLimits/read",
+      "account/read",
+    ]);
+    expect(rpcMethods).not.toContain("session/new");
+    expect(rpcMethods).not.toContain("session/prompt");
+    expect(result.windows).toEqual([
+      expect.objectContaining({ label: "5h limit", usedPercent: 25 }),
+    ]);
+    expect(kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("falls back to WHAM when the CLI rejects the noninteractive approval mode", async () => {
+    fs.writeFileSync(
+      path.join(isolatedCodexHome!, "auth.json"),
+      JSON.stringify({ tokens: { access_token: "access-token-fixture-secret" } }),
+      "utf8",
+    );
+    const policyError = new Error("unsupported approval policy: never");
+    mockSpawn.mockImplementation(() => createChildThatErrorsOnMicrotask(policyError));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(
+        JSON.stringify({ rate_limit: { primary_window: { used_percent: 0.25 } } }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      )),
+    );
+
+    const result = await getQuotaWindows();
+
+    expect(result).toMatchObject({
+      ok: true,
+      source: "codex-wham",
+      windows: [expect.objectContaining({ label: "5h limit", usedPercent: 25 })],
+    });
+    expect(JSON.stringify(result)).not.toContain("access-token-fixture-secret");
   });
 
   it("falls back to WHAM after an app-server refresh-token failure", async () => {
