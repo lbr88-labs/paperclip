@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeManagedShim, flipCurrentAtomic, initializeInstallStore, payloadPathFor, readInstallManifest, resolveInstallStorePaths, writeInstallManifestAtomic, type InstallManifest, type InstallRecord } from "../install-store.js";
 import type { CommandRunner } from "../commands/install.js";
 import { compareVersions, detectInstallMode, resolveUpdateRequest, rollbackManagedInstall, updateCommand } from "../commands/update.js";
+import { writeCodexRuntimePayload } from "./helpers/codex-runtime-fixture.js";
 
 let root: string;
 let previousHome: string | undefined;
@@ -14,10 +15,8 @@ function record(payloadPath: string, version: string, channel: "latest" | "canar
   return { source: "npm", version, channel, payloadPath, installedAt: `2026-07-22T00:00:0${version}.000Z` };
 }
 function createPayload(payloadPath: string, version: string): string {
-  const entrypoint = path.join(payloadPath, "node_modules", "paperclipai", "dist", "index.js");
-  fs.mkdirSync(path.dirname(entrypoint), { recursive: true });
-  fs.writeFileSync(entrypoint, version);
-  return entrypoint;
+  writeCodexRuntimePayload(payloadPath, { version });
+  return path.join(payloadPath, "node_modules", "paperclipai", "dist", "index.js");
 }
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-update-"));
