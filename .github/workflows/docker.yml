@@ -487,7 +487,11 @@ jobs:
           revision="$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
           [[ "$revision" == "$SOURCE_SHA" ]] || { echo 'Image source revision does not match'; exit 1; }
           digest="$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')"
-          container="$(docker create --platform linux/amd64 "$image")"
+          # The image normally loads DB source through tsx. Managed CLI installs
+          # require its published dist layout, so build this small package alone.
+          container="$(docker create --platform linux/amd64 --memory=3g --memory-swap=3g --entrypoint /bin/sh "$image" -c 'cd /app && corepack pnpm --filter @paperclipai/db build')"
+          docker start --attach "$container"
+          [[ "$(docker inspect "$container" --format '{{.State.ExitCode}}')" == 0 ]]
           mkdir -p payload/server payload/ui payload/shared payload/db output
           docker cp "$container:/app/server/dist" payload/server/dist
           docker cp "$container:/app/ui/dist" payload/ui/dist
