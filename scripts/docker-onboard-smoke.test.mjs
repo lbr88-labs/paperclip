@@ -84,7 +84,7 @@ test("workflow fixes the container name before the harness runs", () => {
   // Reading the name back out of the harness is the defect: a step that only
   // learns it on success cannot use it on failure.
   assert.doesNotMatch(dockerJob, /echo "SMOKE_CONTAINER_NAME=/);
-  assert.match(dockerJob, /SMOKE_LOG_FILE="\$\{\{ runner\.temp \}\}\/docker-onboard-smoke\.log"/);
+  assert.match(dockerJob, /SMOKE_LOG_FILE="\$RUNNER_TEMP\/docker-onboard-smoke\.log"/);
 });
 
 test("workflow captures and uploads the logs unconditionally", () => {
