@@ -1871,6 +1871,14 @@ export function authorizationService(db: Db | DbTransaction) {
       });
     }
 
+    if (input.actor.keyScope?.kind === "status_read") {
+      return deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation: "Status-read keys may only use the bounded status routes.",
+      });
+    }
+
     if (input.actor.keyScope?.kind === "skill_test") {
       const skillTestDecision = decideSkillTestAccess({
         action: input.action,

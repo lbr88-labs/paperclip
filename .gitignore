@@ -82,3 +82,6 @@ test-results/
 
 # Retained local lifecycle behavior measurements
 .lifecycle-baseline/
+
+# Publish the reviewed recovery operator health utility.
+!scripts/operators/check-legacy-recovery-hold-dedupe.mjs

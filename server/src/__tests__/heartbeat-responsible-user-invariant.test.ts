@@ -20,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
@@ -98,6 +99,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
     // Await every in-flight background heartbeat run to quiescence before the
@@ -157,14 +159,16 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     return { companyId, ownerUserId, agentId };
   }
 
-  it("dispatches an interrupted queue under the clicking operator through the real startup path", async () => {
+  it.each([false, true])("dispatches an interrupted queue under the clicking operator (conversation: %s)", async (conversation) => {
+    if (conversation) await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status: "todo",
-      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
-    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId,
+      ...(conversation ? { conversationAgentId: agentId, conversationUserId: operatorId, conversationState: "active" as const } : {}) });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: conversation ? operatorId : ownerUserId, body: "Continue the task" });
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
       source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
       payload: { issueId, commentId, queuedCommentInterrupt: { actorId: operatorId, requestedAt: new Date().toISOString() },
@@ -183,7 +187,38 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     expect(runs.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
-    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(conversation ? operatorId : ownerUserId);
+  });
+
+  it("fails an invalid queued interrupt without stranding the next run", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 2 } } })
+      .where(eq(agents.id, agentId));
+    const invalidRunId = randomUUID(), validRunId = randomUUID();
+    const invalidWakeId = randomUUID(), validWakeId = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      { id: invalidRunId, companyId, agentId, status: "queued", invocationSource: "on_demand",
+        triggerDetail: "manual", responsibleUserId: ownerUserId, contextSnapshot: {} },
+      { id: validRunId, companyId, agentId, status: "queued", invocationSource: "on_demand",
+        triggerDetail: "manual", responsibleUserId: ownerUserId, contextSnapshot: {} },
+    ]);
+    await db.insert(agentWakeupRequests).values([
+      { id: invalidWakeId, companyId, agentId, source: "on_demand", status: "queued",
+        runId: invalidRunId, requestedByActorType: "user", requestedByActorId: ownerUserId,
+        idempotencyKey: `queued-comment-interrupt:${randomUUID()}` },
+      { id: validWakeId, companyId, agentId, source: "on_demand", status: "queued",
+        runId: validRunId, requestedByActorType: "user", requestedByActorId: ownerUserId,
+        payload: { manualUserWake: true } },
+    ]);
+    await db.update(heartbeatRuns).set({ wakeupRequestId: invalidWakeId }).where(eq(heartbeatRuns.id, invalidRunId));
+    await db.update(heartbeatRuns).set({ wakeupRequestId: validWakeId }).where(eq(heartbeatRuns.id, validRunId));
+
+    await heartbeat.resumeQueuedRuns();
+    expect(await waitForRun(db, invalidRunId)).toMatchObject({
+      status: "failed", errorCode: "queued_comment_interrupt_authority_unavailable",
+    });
+    expect(await waitForRun(db, validRunId)).toMatchObject({ status: "succeeded" });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a board manual wake under its caller even when it adopts someone else's queue", async () => {

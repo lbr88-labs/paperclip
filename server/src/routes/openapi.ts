@@ -197,6 +197,7 @@ import {
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   startTaskDrainRequestSchema,
+  createTaskDrainDelegationSchema,
   // Resource memberships
   updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
@@ -1246,6 +1247,7 @@ function registerCurrentRoute(input: {
 type OpenApiAuthLevel =
   | "public"
   | "agent_run"
+  | "delegated_task_drain"
   | "runtime_tools"
   | "authenticated"
   | "board"
@@ -1543,6 +1545,17 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
   "POST /api/admin/users/{userId}/promote-instance-admin",
   "POST /api/admin/users/{userId}/demote-instance-admin",
   "PUT /api/admin/users/{userId}/company-access",
+  "GET /api/instance/task-drain/delegations/target",
+  "GET /api/instance/task-drain/delegations",
+  "POST /api/instance/task-drain/delegations",
+  "DELETE /api/instance/task-drain/delegations/{grantId}",
+]);
+
+const SESSION_ONLY_OPERATIONS = new Set([
+  "GET /api/instance/task-drain/delegations/target",
+  "GET /api/instance/task-drain/delegations",
+  "POST /api/instance/task-drain/delegations",
+  "DELETE /api/instance/task-drain/delegations/{grantId}",
 ]);
 
 const CREATED_OPERATIONS = new Set([
@@ -1558,6 +1571,7 @@ const CREATED_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/onboarding-seed",
   "POST /api/cli-auth/challenges",
   "POST /api/board-api-keys",
+  "POST /api/instance/task-drain/delegations",
   "POST /api/companies",
   "POST /api/companies/{companyId}/invites",
   "POST /api/companies/{companyId}/openclaw/invite-prompt",
@@ -1635,6 +1649,7 @@ function resolveOperationAuthLevel(
 ): OpenApiAuthLevel {
   const key = operationKey(method, path);
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (["GET", "POST", "DELETE"].includes(method.toUpperCase()) && path === "/api/instance/task-drain") return "delegated_task_drain";
   if (key === "POST /api/mcp/project-tools" || key === "POST /api/companies/{companyId}/slack/tasks/{issueId}/tools") return "agent_run";
   if (RUNTIME_TOOLS_OPERATIONS.has(key)) return "runtime_tools";
   if (INSTANCE_ADMIN_OPERATIONS.has(key)) return "instance_admin";
@@ -1704,19 +1719,25 @@ function applyDocumentFixups(document: any): any {
       const authLevel = resolveOperationAuthLevel(method, path);
       if (authLevel === "public") {
         operation.security = [];
+      } else if (authLevel === "delegated_task_drain") {
+        operation.security = [...BOARD_SECURITY, securityRequirement(AGENT_RUN_AUTH_SCHEME)];
       } else if (authLevel === "agent_run") {
         operation.security = [securityRequirement(AGENT_RUN_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
         operation.security = RUNTIME_TOOLS_SECURITY;
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
+      } else if (SESSION_ONLY_OPERATIONS.has(operationKey(method, path))) {
+        operation.security = [securityRequirement(BOARD_SESSION_AUTH_SCHEME)];
       } else {
         operation.security = BOARD_SECURITY;
       }
 
       operation["x-paperclip-authorization"] =
-        authLevel === "instance_admin"
-          ? { actor: "board", instanceAdmin: true }
+        authLevel === "delegated_task_drain"
+          ? { actor: "board_or_delegated_agent", delegatedAgent: { role: "ceo", heartbeatBound: true, grantRequired: true, action: ({ GET: "read", POST: "start", DELETE: "stop" } as Record<string, string>)[method.toUpperCase()] } }
+          : authLevel === "instance_admin"
+          ? { actor: "board", instanceAdmin: true, ...(SESSION_ONLY_OPERATIONS.has(operationKey(method, path)) ? { signedInSession: true } : {}) }
           : authLevel === "board"
             ? { actor: "board" }
             : authLevel === "agent_run"
@@ -6193,8 +6214,42 @@ registry.registerPath({
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary:
-    "Get the task-drain status for this process only; quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
-  responses: { 200: r.ok(), 401: r.unauthorized },
+    "Get the task-drain status for this process only; board members or an agent with a live read delegation may call it. Quiescent counts in-process work, and a process restart clears it even when the database still holds running rows",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/task-drain/delegations/target",
+  tags: ["instance"],
+  summary: "Get the exact instance and company target eligible for a task-drain delegation (signed-in instance admin only)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/instance/task-drain/delegations",
+  tags: ["instance"],
+  summary: "List task-drain delegations (signed-in instance admin only)",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/instance/task-drain/delegations",
+  tags: ["instance"],
+  summary: "Issue an action-scoped, expiring CEO task-drain delegation for this single-company instance (signed-in instance admin only)",
+  request: { body: jsonBody(createTaskDrainDelegationSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden },
+});
+
+registry.registerPath({
+  method: "delete",
+  path: "/api/instance/task-drain/delegations/{grantId}",
+  tags: ["instance"],
+  summary: "Revoke an active task-drain delegation (signed-in instance admin only)",
+  request: { params: z.object({ grantId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -6202,7 +6257,7 @@ registry.registerPath({
   path: "/api/instance/task-drain",
   tags: ["instance"],
   summary:
-    "Start a task drain, so new run admission holds until active runs finish",
+    "Start a task drain, so new run admission holds until active runs finish; a delegated agent must supply a finite TTL within its grant expiry",
   request: { body: jsonBody(startTaskDrainRequestSchema) },
   responses: {
     200: r.ok(),

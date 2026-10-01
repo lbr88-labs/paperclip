@@ -29,6 +29,12 @@ const mockCompanyService = vi.hoisted(() => ({
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockPublishActivity = vi.hoisted(() => vi.fn());
+const mockDelegations = vi.hoisted(() => ({
+  list: vi.fn(),
+  create: vi.fn(),
+  revoke: vi.fn(),
+  authorize: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -40,6 +46,9 @@ function registerModuleMocks() {
   }));
   vi.doMock("../services/environments.js", () => ({
     environmentService: () => mockEnvironmentService,
+  }));
+  vi.doMock("../services/task-drain-delegation.js", () => ({
+    taskDrainDelegationService: () => mockDelegations,
   }));
 }
 
@@ -112,6 +121,7 @@ describe("instance settings routes", () => {
     mockEnvironmentService.update.mockReset();
     mockPublishActivity.mockReset();
     mockLogActivity.mockReset();
+    for (const fn of Object.values(mockDelegations)) fn.mockReset();
     // Mirrors the real logActivity: push a publication for the transaction
     // to publish once it commits, so route-level tests can prove publish
     // happens only after every company's write in the same request lands.
@@ -971,6 +981,112 @@ describe("instance settings routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual(idleStatus);
+    });
+
+    it("requires a live, action-scoped delegation for an agent JWT", async () => {
+      mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+      mockHeartbeatService.getTaskDrainStatus.mockReturnValue(idleStatus);
+      const actor = { type: "agent", source: "agent_jwt", agentId: "agent-1", companyId: "company-1", runId: "run-1" };
+      const app = await createApp(actor);
+
+      const denied = await request(app).get("/api/instance/task-drain");
+      expect(denied.status).toBe(403);
+      expect(mockHeartbeatService.getTaskDrainStatus).not.toHaveBeenCalled();
+
+      mockDelegations.authorize.mockResolvedValue({ id: "grant-1" });
+      const allowed = await request(app).get("/api/instance/task-drain");
+      expect(allowed.status).toBe(200);
+      expect(mockDelegations.authorize).toHaveBeenCalledWith(expect.objectContaining({
+        agentId: "agent-1", companyId: "company-1", instanceSettingsId: "instance-settings-1",
+        companyIds: ["company-1"], action: "read",
+      }));
+      expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+        action: "instance.task_drain.delegated_read", entityId: "grant-1", runId: "run-1",
+      }), expect.any(Array));
+    });
+
+    it("rejects a long-lived agent key even if a grant exists", async () => {
+      const app = await createApp({ type: "agent", source: "agent_key", agentId: "agent-1", companyId: "company-1" });
+      const res = await request(app).get("/api/instance/task-drain");
+      expect(res.status).toBe(403);
+      expect(mockDelegations.authorize).not.toHaveBeenCalled();
+    });
+
+    it("does not start a drain when the agent lacks the start action", async () => {
+      mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+      const app = await createApp({ type: "agent", source: "agent_jwt", agentId: "agent-1", companyId: "company-1", runId: "run-1" });
+      const res = await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000 });
+      expect(res.status).toBe(403);
+      expect(mockDelegations.authorize).toHaveBeenCalledWith(expect.objectContaining({ action: "start", ttlMs: 60_000 }));
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("blocks grant management for an agent and an ordinary board member", async () => {
+      const body = { agentId: "11111111-1111-4111-8111-111111111111", companyId: "22222222-2222-4222-8222-222222222222",
+        instanceId: "default",
+        instanceSettingsId: "33333333-3333-4333-8333-333333333333", actions: ["read"],
+        expiresAt: new Date(Date.now() + 3_600_000).toISOString() };
+      for (const actor of [
+        { type: "agent", source: "agent_jwt", agentId: body.agentId, companyId: body.companyId, runId: "run-1" },
+        { type: "board", source: "session", userId: "member-1", isInstanceAdmin: false },
+      ]) {
+        const app = await createApp(actor);
+        expect((await request(app).post("/api/instance/task-drain/delegations").send(body)).status).toBe(403);
+        expect((await request(app).get("/api/instance/task-drain/delegations")).status).toBe(403);
+        expect((await request(app).delete(`/api/instance/task-drain/delegations/${body.agentId}`)).status).toBe(403);
+      }
+      expect(mockDelegations.create).not.toHaveBeenCalled();
+      expect(mockDelegations.revoke).not.toHaveBeenCalled();
+    });
+
+    it("issues only for the exact single-company instance and permits admin revocation", async () => {
+      const companyId = "22222222-2222-4222-8222-222222222222";
+      const instanceSettingsId = "33333333-3333-4333-8333-333333333333";
+      const agentId = "11111111-1111-4111-8111-111111111111";
+      const grantId = "44444444-4444-4444-8444-444444444444";
+      const body = { agentId, companyId, instanceId: "default", instanceSettingsId,
+        actions: ["read", "start", "stop"], expiresAt: new Date(Date.now() + 3_600_000).toISOString() };
+      mockInstanceSettingsService.get.mockResolvedValue({ id: instanceSettingsId });
+      mockDelegations.create.mockResolvedValue({ id: grantId, ...body });
+      mockDelegations.revoke.mockResolvedValue({ id: grantId, revokedAt: new Date() });
+      const app = await createApp(adminActor);
+
+      const denied = await request(app).post("/api/instance/task-drain/delegations").send(body);
+      expect(denied.status).toBe(403); // two companies share this process
+      expect(mockDelegations.create).not.toHaveBeenCalled();
+
+      mockInstanceSettingsService.listCompanyIds.mockResolvedValue([companyId]);
+      const target = await request(app).get("/api/instance/task-drain/delegations/target");
+      expect(target.status).toBe(200);
+      expect(target.body.companyIds).toEqual([companyId]);
+      body.instanceId = target.body.instanceId;
+      const wrongInstance = await request(app).post("/api/instance/task-drain/delegations")
+        .send({ ...body, instanceId: `${body.instanceId}-other` });
+      expect(wrongInstance.status).toBe(403);
+      expect(mockDelegations.create).not.toHaveBeenCalled();
+      const created = await request(app).post("/api/instance/task-drain/delegations").send(body);
+      expect(created.status).toBe(201);
+      expect(mockDelegations.create).toHaveBeenCalledWith(expect.objectContaining({
+        agentId, companyId, instanceId: body.instanceId, instanceSettingsId,
+        actions: ["read", "start", "stop"], issuedByUserId: "admin-1",
+      }));
+      const revoked = await request(app).delete(`/api/instance/task-drain/delegations/${grantId}`);
+      expect(revoked.status).toBe(200);
+      expect(mockDelegations.revoke).toHaveBeenCalledWith(grantId, "admin-1");
+    });
+
+    it("rejects a delegated start that would outlive the grant before auditing or applying", async () => {
+      mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+      mockDelegations.authorize.mockResolvedValue({ id: "grant-1", expiresAt: new Date(Date.now() + 30_000) });
+      mockHeartbeatService.computeTaskDrain.mockReturnValue({
+        startedAt: new Date(), expiresAt: new Date(Date.now() + 60_000),
+      });
+      const app = await createApp({ type: "agent", source: "agent_jwt", agentId: "agent-1", companyId: "company-1", runId: "run-1" });
+      const res = await request(app).post("/api/instance/task-drain").send({ ttlMs: 60_000 });
+      expect(res.status).toBe(403);
+      expect(mockDb.transaction).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
     });
 
     it("writes an activity record for every company, then applies the same drain values, in one transaction", async () => {
