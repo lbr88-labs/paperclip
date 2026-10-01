@@ -8,6 +8,12 @@ on:
         type: boolean
         default: true
 
+permissions: {}
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   authorize:
     name: Authorize optional paid E2E
@@ -33,6 +39,7 @@ jobs:
           jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
 
   e2e:
+    name: Optional paid E2E
     needs: authorize
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -60,6 +67,8 @@ jobs:
           jq -e --argjson candidate "$ACTOR_ID" 'index($candidate) != null' <<< "$ALLOWED_ACTOR_IDS" >/dev/null
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:

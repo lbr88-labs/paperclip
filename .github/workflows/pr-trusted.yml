@@ -1,15 +1,11 @@
 name: Trusted PR CI
 
-# Rollout is intentionally two-step: merge this reusable workflow first, then
-# replace pr.yml with an immutable-SHA caller so the active CI definition cannot
-# drift from this file.
+# The upstream caller uses the protected master ref required by the AWS runner
+# group allowlist; CODEOWNERS protects changes to this reusable workflow.
 on:
   workflow_call:
 
-permissions:
-  actions: read
-  contents: read
-  pull-requests: read
+permissions: {}
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
@@ -20,6 +16,10 @@ jobs:
     name: Select trusted runner
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: read # Refresh workflow run identity before routing to the trusted fleet.
+      contents: read # Inspect base and merge commits through the API.
+      pull-requests: read # Refresh PR state before allowing the trusted runner.
     outputs:
       runner: ${{ steps.route.outputs.runner }}
       full_ci: ${{ steps.scope.outputs.full_ci }}
@@ -257,6 +257,9 @@ jobs:
     needs: [gate]
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 10
+    name: PR policy
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
 
     steps:
       - name: Checkout repository
@@ -266,13 +269,16 @@ jobs:
           fetch-depth: 0
 
       - name: Block manual lockfile edits
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         if: >-
           github.head_ref != 'chore/refresh-lockfile' &&
           github.event.pull_request.user.login != 'dependabot[bot]'
         run: |
           # Diff the PR branch against its merge base so recent base-branch commits
           # do not masquerade as changes made by the PR itself.
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          changed="$(git diff --name-only "$PR_BASE_SHA...$PR_HEAD_SHA")"
           if printf '%s\n' "$changed" | grep -qx 'pnpm-lock.yaml'; then
             echo "Do not commit pnpm-lock.yaml in pull requests. CI owns lockfile updates."
             exit 1
@@ -295,10 +301,13 @@ jobs:
           run_install: false
 
       - name: Validate migration ordering against target branch
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: >-
           node .github/scripts/check-pr-migration-order.mjs
-          "${{ github.event.pull_request.base.sha }}"
-          "${{ github.event.pull_request.head.sha }}"
+          "$PR_BASE_SHA"
+          "$PR_HEAD_SHA"
 
       - name: Validate Dockerfile deps stage
         run: node ./scripts/check-docker-deps-stage.mjs
@@ -337,9 +346,12 @@ jobs:
         run: node ./scripts/release-package-map.mjs check
 
       - name: Verify release package bootstrap for changed manifests
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
-          PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
+          mapfile -t changed_paths < <(git diff --name-only "$PR_BASE_SHA...$PR_HEAD_SHA")
+          PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="$PR_BASE_SHA" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
 
       # Each lane resolves a stale lockfile inline; this early check still
@@ -348,6 +360,8 @@ jobs:
         run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
 
   typecheck_release_registry:
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
     name: Typecheck + Release Registry
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -460,6 +474,8 @@ jobs:
         run: pnpm run test:release-registry
 
   general_tests:
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
     name: General tests (${{ matrix.group_label }})
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -607,15 +623,21 @@ jobs:
           fi
 
       - name: Run grouped general test suites
+        env:
+          TEST_GROUP: ${{ matrix.group }}
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_COUNT: ${{ matrix.shard_count }}
         run: |
-          if [ -n "${{ matrix.shard_count }}" ]; then
-            pnpm test:run:general -- --group '${{ matrix.group }}' \
-              --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+          if [ -n "$SHARD_COUNT" ]; then
+            pnpm test:run:general -- --group "$TEST_GROUP" \
+              --shard-index "$SHARD_INDEX" --shard-count "$SHARD_COUNT"
           else
-            pnpm test:run:general -- --group '${{ matrix.group }}'
+            pnpm test:run:general -- --group "$TEST_GROUP"
           fi
 
   docker_context_integrity:
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
     name: Docker context integrity
     needs: gate
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -632,7 +654,7 @@ jobs:
       # the image-build workflows set it up explicitly, so this lane does
       # too rather than failing before it checks anything.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       # Same .dockerignore semantics as the real image builds: a
       # context-slimming change that strips a committed build input must
@@ -645,6 +667,7 @@ jobs:
         run: docker buildx build --file .github/docker-context-checks.Dockerfile .
 
   verify:
+    permissions: {}
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
     if: ${{ always() }}
@@ -686,6 +709,8 @@ jobs:
           esac
 
   verify_paperclip_runner:
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
     name: Verify Paperclip Runner (${{ matrix.lane_label }})
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -822,9 +847,15 @@ jobs:
         # so the vitest lanes' --shard lands on `vitest run`. Do not add a
         # `--` separator: pnpm forwards it literally and vitest would then
         # read the shard flag as a test filter.
-        run: pnpm --filter @paperclipai/paperclip-runner ${{ matrix.command }}
+        env:
+          RUNNER_COMMAND: ${{ matrix.command }}
+        run: |
+          read -r -a command_args <<< "$RUNNER_COMMAND"
+          pnpm --filter @paperclipai/paperclip-runner "${command_args[@]}"
 
   build:
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
     name: Build
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -937,6 +968,8 @@ jobs:
         run: pnpm build
 
   verify_serialized_server:
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
     name: Verify serialized server suites (${{ matrix.shard_label }})
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -1032,9 +1065,14 @@ jobs:
           fi
 
       - name: Run serialized server test shard
-        run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+        env:
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_COUNT: ${{ matrix.shard_count }}
+        run: pnpm test:run:serialized -- --shard-index "$SHARD_INDEX" --shard-count "$SHARD_COUNT"
 
   canary_dry_run:
+    permissions:
+      contents: read # Read the checked-out source; PR test jobs require no write access.
     name: Canary Dry Run
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -1160,6 +1198,8 @@ jobs:
           ./scripts/release.sh canary --skip-verify --dry-run
 
   e2e_shards:
+    permissions:
+      contents: read # Read source for the browser test lane.
     name: e2e shard (${{ matrix.shard_label }})
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' }}
@@ -1277,6 +1317,9 @@ jobs:
 
       - name: Run e2e tests
         env:
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_COUNT: ${{ matrix.shard_count }}
+          SHARD_LABEL: ${{ matrix.shard_label }}
           PAPERCLIP_E2E_SKIP_LLM: "true"
           PAPERCLIP_PLAYWRIGHT_CHANNEL: "chrome"
         run: |
@@ -1284,8 +1327,8 @@ jobs:
           # (smoke-lab) is ~40% of the lane's wall clock. Partition by recorded
           # spec duration instead so both runners finish together.
           specs="$(node ./scripts/e2e-shard.mjs \
-            --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }})"
-          echo "shard ${{ matrix.shard_label }} specs: $specs"
+            --shard-index "$SHARD_INDEX" --shard-count "$SHARD_COUNT")"
+          echo "shard $SHARD_LABEL specs: $specs"
           # specs is an intentional argument list.
           # shellcheck disable=SC2086
           pnpm run test:e2e $specs
@@ -1301,6 +1344,7 @@ jobs:
           retention-days: 14
 
   e2e:
+    permissions: {}
     # Preserve the legacy required-check name while the specs run sharded
     # across the matrix above (same pattern as the `verify` aggregate).
     name: e2e

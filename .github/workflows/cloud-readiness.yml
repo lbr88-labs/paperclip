@@ -15,9 +15,11 @@ concurrency:
 
 jobs:
   verify:
+    name: Verify release source # zizmor: ignore[self-repository]
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
     permissions:
       contents: read
+    # GitHub reusable workflows require the same-commit relative ./ syntax.
     uses: ./.github/workflows/release-verify.yml
     with:
       ref: ${{ github.sha }}
