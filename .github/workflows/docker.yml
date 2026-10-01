@@ -56,6 +56,7 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
+    name: Build production image by architecture
     strategy:
       # Independent legs: one architecture failing should still publish
       # nothing, but it must not also hide the other's logs behind a
@@ -76,13 +77,14 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      packages: write
+      packages: write # Publish image layers and tags to GHCR.
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
+          persist-credentials: false
           fetch-depth: 0
 
       # `.git` is dockerignored, so a running image cannot derive its own
@@ -119,7 +121,7 @@ jobs:
         run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 9.15.4
           run_install: false
@@ -128,9 +130,10 @@ jobs:
       # restoring a shared Actions cache into the build inputs would let a
       # poisoned cache entry reach the published artifact.
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
+          package-manager-cache: false
 
       - name: Refresh lockfile for Docker build context
         run: |
@@ -175,14 +178,14 @@ jobs:
           df -h
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       # Deployment tooling reads these labels from the registry to verify an
       # image's schema expectations against a migrator before deploying it,
@@ -206,7 +209,7 @@ jobs:
       # so parallel canary builds cannot race it backwards.
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@v6
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
@@ -222,7 +225,7 @@ jobs:
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
           # Pin the self-hosted image to the production stage explicitly:
@@ -254,10 +257,12 @@ jobs:
       # empty file named for it, which is the upstream pattern — the name is
       # the payload, so several legs can upload without colliding on content.
       - name: Export digest
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
+          digest="$IMAGE_DIGEST"
           test -n "$digest"
           touch "/tmp/digests/${digest#sha256:}"
 
@@ -273,20 +278,22 @@ jobs:
   # tags. Nothing is publicly tagged until this runs, so a half-published
   # multi-arch image is not a state anything can pull.
   merge-and-push:
+    name: Publish production image manifest
     needs: build-and-push
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
+      packages: write # Publish image layers and tags to GHCR.
+      id-token: write # Obtain the standard image attestation identity.
+      attestations: write # Publish standard production image provenance.
     steps:
       # Checked out for `packages/db` (schema labels) and the orphan-reaping
       # script the verification step pipes in.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Download digests
@@ -304,7 +311,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
 
       # Repeated from the build job rather than passed between them: job
       # outputs would have to survive a matrix, and this is two `ls` calls.
@@ -341,11 +348,13 @@ jobs:
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
         run: |
           set -euo pipefail
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+            $(printf "$IMAGE@sha256:%s " *)
 
       # PID 1 must be an init that reaps adopted orphans. With node there, the
       # orphans agent runs leave behind are never wait()ed and pin as zombies
@@ -403,6 +412,7 @@ jobs:
   # promotion is gated on its own completed pushes). Every interleaving
   # converges the Docker channel onto the npm channel.
   promote_canary_channel:
+    name: Promote the current canary channel
     if: startsWith(github.ref, 'refs/tags/canary/v')
     # merge-and-push, not build-and-push: the per-arch legs push untagged
     # digests, and the production `sha-*` tags this promotion retags only
@@ -412,13 +422,13 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      packages: write
+      packages: write # Publish image layers and tags to GHCR.
     concurrency:
       group: docker-canary-channel-promotion
       cancel-in-progress: false
     steps:
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
