@@ -16,18 +16,30 @@ describe("codex local adapter metadata", () => {
     expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-5.6-sol");
     expect(modelIds.slice(0, 6)).toEqual([
       "gpt-5.6-sol",
+      "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",
       "gpt-5.6-terra",
-      "gpt-5.6-luna",
     ]);
+    expect(modelIds).toContain("gpt-5.6-luna");
     expect(modelIds).not.toContain("gpt-5.6");
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-6.1-sol")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-astra")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-sol")).toBe(true);
     expect(modelIds).not.toContain("gpt-5.3-codex");
     expect(modelIds).not.toContain("gpt-5.3-codex-spark");
+  });
+
+  it("offers GPT-6.1 Sol only its documented reasoning efforts", () => {
+    expect(codexLocalReasoningEffortsForModel("gpt-6.1-sol")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
   });
 
   it.each(["gpt-6-astra", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {
@@ -56,12 +68,13 @@ describe("codex local adapter metadata", () => {
     expect(isCodexLocalFastModeSupported(model)).toBe(true);
   });
 
-  it("normalizes the legacy bare gpt-5.6 alias to the concrete gpt-5.6-sol slug", () => {
+  it("normalizes the legacy bare gpt-5.6 alias and preserves GPT-6.1 Sol", () => {
     expect(normalizeCodexModel("gpt-5.6")).toBe("gpt-5.6-sol");
     expect(normalizeCodexModel("  gpt-5.6  ")).toBe("gpt-5.6-sol");
     // Concrete slugs and unknown/manual model IDs pass through untouched.
     expect(normalizeCodexModel("gpt-5.6-sol")).toBe("gpt-5.6-sol");
     expect(normalizeCodexModel("gpt-5.5")).toBe("gpt-5.5");
+    expect(normalizeCodexModel("gpt-6.1-sol")).toBe("gpt-6.1-sol");
     expect(normalizeCodexModel("future-model")).toBe("future-model");
     expect(normalizeCodexModel("")).toBe("");
     expect(normalizeCodexModel(null)).toBe("");
