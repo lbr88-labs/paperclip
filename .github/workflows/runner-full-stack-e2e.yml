@@ -42,8 +42,7 @@ on:
         type: string
         required: false
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: runner-full-stack-e2e-${{ github.event_name == 'workflow_dispatch' && inputs.target_branch != '' && inputs.target_branch != github.event.repository.default_branch && format('development-{0}', inputs.target_branch) || format('protected-{0}', github.run_id) }}
@@ -368,8 +367,8 @@ jobs:
     timeout-minutes: 45
     permissions:
       contents: read
-      packages: write
-      id-token: write
+      packages: write # Publish the verified Daytona image to GHCR.
+      id-token: write # Sign the verified Daytona image with Sigstore OIDC.
     outputs:
       image: ${{ steps.image.outputs.image }}
       source_revision: ${{ steps.image.outputs.source_revision }}
@@ -410,7 +409,7 @@ jobs:
 
       - name: Set up Docker Buildx
         if: needs.catalog.outputs.needs_daytona == 'true'
-        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
       - name: Log into GHCR
         if: needs.catalog.outputs.needs_daytona == 'true'
@@ -964,7 +963,9 @@ jobs:
 
       - name: Install pinned legacy Claude CLI
         if: matrix.profileId == 'legacy-claude'
-        run: |
+        run: | # zizmor: ignore[adhoc-packages]
+          # This ephemeral provider compatibility fixture intentionally tests the exact
+          # legacy CLI release; it is not a workspace or published runtime dependency.
           npm install --global --omit=dev --ignore-scripts @anthropic-ai/claude-code@2.1.277
           launcher="$(npm root --global)/@anthropic-ai/claude-code/cli-wrapper.cjs"
           chmod +x "$launcher"
@@ -1054,6 +1055,7 @@ jobs:
 
       - name: Run paid cell
         env:
+          EXECUTION_ID: ${{ matrix.executionId }}
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ matrix.credentialName == 'ANTHROPIC_API_KEY' && secrets.ANTHROPIC_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ matrix.credentialName == 'OPENROUTER_API_KEY' && secrets.OPENROUTER_API_KEY || '' }}
@@ -1066,7 +1068,7 @@ jobs:
           PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
           PAPERCLIP_RUNNER_E2E_SOURCE_REF: ${{ needs.authorize.outputs.target_ref }}
           PAPERCLIP_PLAYWRIGHT_CHANNEL: ${{ needs.authorize.outputs.playwright_channel }}
-        run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}"
+        run: pnpm test:e2e:runner -- --id "$EXECUTION_ID"
 
       - name: Upload access-controlled packaged cell evidence
         if: always()
@@ -1086,7 +1088,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      actions: read
+      actions: read # Read campaign job attempts and their evidence artifacts.
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1127,7 +1129,7 @@ jobs:
           gh api --paginate --slurp \
             "repos/$REPOSITORY/actions/runs/$RUN_ID/jobs?filter=all&per_page=100" \
             > runner-e2e-job-pages.json
-          for attempt in $(seq 1 "${{ github.run_attempt }}"); do
+          for attempt in $(seq 1 "$GITHUB_RUN_ATTEMPT"); do
             gh api "repos/$REPOSITORY/actions/runs/$RUN_ID/attempts/$attempt" \
               --jq '{run_attempt, run_started_at}'
           done > runner-e2e-attempts.jsonl
@@ -1235,7 +1237,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      id-token: write
+      id-token: write # Obtain the identity token required by this job's cloud publisher.
     environment:
       name: runner-e2e-history
     steps:
@@ -1274,7 +1276,7 @@ jobs:
           path: runner-e2e-merged-report
 
       - name: Exchange GitHub OIDC identity for scoped AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_E2E_HISTORY_AWS_REGION }}
@@ -1290,7 +1292,7 @@ jobs:
       - name: Resolve Pages artifact name
         id: pages_artifact_name
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
-        run: echo "name=github-pages-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+        run: echo "name=github-pages-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Package pruned dashboard with declared screenshots for GitHub Pages
         if: vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
@@ -1305,8 +1307,8 @@ jobs:
     if: always() && needs.report.outputs.history_source_ready == 'true' && needs.publish_history.result == 'success' && vars.RUNNER_FULL_STACK_E2E_PUBLISH_PAGES == 'true'
     runs-on: ubuntu-latest
     permissions:
-      pages: write
-      id-token: write
+      pages: write # Deploy the sanitized campaign dashboard to GitHub Pages.
+      id-token: write # Authorize the GitHub Pages deployment via OIDC.
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
