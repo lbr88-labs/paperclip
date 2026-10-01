@@ -6248,6 +6248,7 @@ registry.registerPath({
   path: "/api/instance/task-drain/delegations/{grantId}",
   tags: ["instance"],
   summary: "Revoke an active task-drain delegation (signed-in instance admin only)",
+  request: { params: z.object({ grantId: z.string().uuid() }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 

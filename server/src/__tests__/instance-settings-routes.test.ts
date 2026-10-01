@@ -1057,10 +1057,18 @@ describe("instance settings routes", () => {
       expect(mockDelegations.create).not.toHaveBeenCalled();
 
       mockInstanceSettingsService.listCompanyIds.mockResolvedValue([companyId]);
+      const target = await request(app).get("/api/instance/task-drain/delegations/target");
+      expect(target.status).toBe(200);
+      expect(target.body.companyIds).toEqual([companyId]);
+      body.instanceId = target.body.instanceId;
+      const wrongInstance = await request(app).post("/api/instance/task-drain/delegations")
+        .send({ ...body, instanceId: `${body.instanceId}-other` });
+      expect(wrongInstance.status).toBe(403);
+      expect(mockDelegations.create).not.toHaveBeenCalled();
       const created = await request(app).post("/api/instance/task-drain/delegations").send(body);
       expect(created.status).toBe(201);
       expect(mockDelegations.create).toHaveBeenCalledWith(expect.objectContaining({
-        agentId, companyId, instanceId: "default", instanceSettingsId,
+        agentId, companyId, instanceId: body.instanceId, instanceSettingsId,
         actions: ["read", "start", "stop"], issuedByUserId: "admin-1",
       }));
       const revoked = await request(app).delete(`/api/instance/task-drain/delegations/${grantId}`);

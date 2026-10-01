@@ -252,6 +252,9 @@ describe("openapi routes", () => {
       });
       expect(operation.summary).toContain("signed-in instance admin only");
     }
+    expect(spec.paths["/api/instance/task-drain/delegations/{grantId}"].delete.parameters).toContainEqual({
+      name: "grantId", in: "path", required: true, schema: { type: "string", format: "uuid" },
+    });
   });
 
   it("documents personal board-only announcements and private responses", () => {
