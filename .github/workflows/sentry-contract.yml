@@ -17,8 +17,7 @@ on:
       - server/src/peer-version-check.ts
       - server/src/__tests__/*sentry*.test.ts
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: sentry-contract-${{ github.event.pull_request.number || github.ref }}
@@ -29,6 +28,8 @@ jobs:
     name: Real Sentry SDK isolation
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -51,9 +52,15 @@ jobs:
 
       - name: Install the audited optional SDK outside the workspace
         shell: bash
-        run: |
+        run: | # zizmor: ignore[adhoc-packages]
+          set -euo pipefail
           sentry_version=$(node -p 'require("./server/package.json").peerDependencies["@sentry/node"]')
-          npm install --prefix "$RUNNER_TEMP/sentry-contract-sdk" --ignore-scripts --no-audit --no-fund --package-lock=false "@sentry/node@$sentry_version"
+          # Fail closed if a manifest change no longer matches the audited SDK.
+          # Update this exact test fixture alongside the peer contract after review.
+          test "$sentry_version" = "10.71.0"
+          # The optional peer is deliberately isolated from workspace resolution:
+          # this ephemeral install exercises the real SDK without publishing it.
+          npm install --prefix "$RUNNER_TEMP/sentry-contract-sdk" --ignore-scripts --no-audit --no-fund --package-lock=false @sentry/node@10.71.0
 
       - name: Verify run failure isolation with the real SDK
         env:
