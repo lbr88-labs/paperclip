@@ -11,10 +11,15 @@ on:
 # Caller-provided refs may name unmerged PR code. AWS is eligible only when
 # the caller runs on canonical master and verifies that event's exact SHA.
 # The organization group also restricts these workflow files to master.
+permissions: {}
+
 jobs:
   runner_chaos_evals:
     name: Pre-release Runner chaos evals
-    uses: ./.github/workflows/runner-chaos-evals.yml
+    permissions:
+      contents: read
+    # GitHub reusable workflows require the documented relative path syntax.
+    uses: ./.github/workflows/runner-chaos-evals.yml # zizmor: ignore[self-repository]
     with:
       ref: ${{ inputs.ref }}
 
@@ -30,6 +35,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -158,6 +164,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -174,12 +181,16 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Run grouped general test suites
+        env:
+          TEST_GROUP: ${{ matrix.group }}
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_COUNT: ${{ matrix.shard_count }}
         run: |
-          if [ -n "${{ matrix.shard_count }}" ]; then
-            pnpm test:run:general -- --group '${{ matrix.group }}' \
-              --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+          if [ -n "$SHARD_COUNT" ]; then
+            pnpm test:run:general -- --group "$TEST_GROUP" \
+              --shard-index "$SHARD_INDEX" --shard-count "$SHARD_COUNT"
           else
-            pnpm test:run:general -- --group '${{ matrix.group }}'
+            pnpm test:run:general -- --group "$TEST_GROUP"
           fi
 
   serialized_tests:
@@ -213,6 +224,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -229,7 +241,10 @@ jobs:
         run: pnpm install --no-frozen-lockfile
 
       - name: Run serialized server test shard
-        run: pnpm test:run:serialized -- --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+        env:
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_COUNT: ${{ matrix.shard_count }}
+        run: pnpm test:run:serialized -- --shard-index "$SHARD_INDEX" --shard-count "$SHARD_COUNT"
 
   runner_workflow_evals:
     name: Runner workflow eval scorer contract
@@ -243,6 +258,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -282,6 +298,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
