@@ -41,3 +41,14 @@ test('findExistingComment: returns null when no signed comment exists', async ()
 
   assert.equal(comment, null);
 });
+
+test('findExistingComment: reuses the fork workflow bot comment', async () => {
+  const expected = {id: 23, user: {login: 'github-actions[bot]', type: 'Bot'}, body: 'Fork quality gates\n\n— commitperclip'};
+  const comment = await findExistingComment(async () => [expected], 'token', 'lbr88-labs/paperclip', 6);
+  assert.equal(comment, expected);
+});
+
+test('findExistingComment: ignores a copied signature from another actor', async () => {
+  const comment = await findExistingComment(async () => [{id: 24, user: {login: 'contributor', type: 'User'}, body: 'Copied\n\n— commitperclip'}], 'token', 'lbr88-labs/paperclip', 6);
+  assert.equal(comment, null);
+});
