@@ -1,19 +1,26 @@
 name: commitperclip PR Review
 
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] -- Only trusted master scripts execute; PR code is never checked out.
     types: [opened, synchronize, reopened]
 
 # Always runs from base branch context — never executes PR code.
 # pull_request_target gives access to secrets for untrusted fork PRs.
 
 permissions:
-  pull-requests: write
-  checks: write
   contents: read
+
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   review:
+    name: Review pull request quality
+    permissions:
+      contents: read # Read trusted base scripts and dependency metadata.
+      pull-requests: write # Create or update the quality gate comment.
+      checks: write # Publish quality gate checks.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -21,6 +28,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: master
+          persist-credentials: false
 
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
@@ -35,6 +43,7 @@ jobs:
 
       - name: Generate commitperclip token
         id: token
+        if: github.repository == 'paperclipai/paperclip'
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
@@ -48,7 +57,7 @@ jobs:
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ steps.token.outputs.value }}
+          GH_TOKEN: ${{ steps.token.outputs.value || github.token }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}

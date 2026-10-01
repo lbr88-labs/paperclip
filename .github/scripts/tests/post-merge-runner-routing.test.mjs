@@ -77,7 +77,7 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
       const publisher = jobs.find(([ , job]) => job === "publish_preview")?.[2];
       assert.match(publisher, /^    runs-on: ubuntu-latest$/m);
       assert.match(publisher, /^    environment: npm-canary$/m);
-      assert.match(publisher, /^      id-token: write$/m);
+      assert.match(publisher, /^      id-token: write(?:[ \t]+#[^\r\n]*)?[ \t]*$/m);
     });
   }
 }

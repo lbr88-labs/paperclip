@@ -415,7 +415,7 @@ jobs:
     timeout-minutes: 18
     permissions:
       contents: read
-      id-token: write
+      id-token: write # Authenticate the scoped AgentCore eval or report publisher role.
     environment:
       name: runner-e2e-paid
     strategy:
@@ -643,7 +643,7 @@ jobs:
     timeout-minutes: 18
     permissions:
       contents: read
-      id-token: write
+      id-token: write # Authenticate the scoped AgentCore eval or report publisher role.
     environment:
       name: runner-e2e-paid
     strategy:
@@ -659,7 +659,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      actions: read
+      actions: read # Download and aggregate access-controlled cell artifacts.
       contents: read
     outputs:
       public_report_ready: ${{ steps.public_report.outputs.ready }}
@@ -850,7 +850,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      id-token: write
+      id-token: write # Authenticate the scoped AgentCore eval or report publisher role.
     environment:
       name: runner-e2e-history
       url: ${{ steps.publish.outputs.report_url }}
@@ -878,7 +878,7 @@ jobs:
           path: runner-protocol-trusted-viewer
 
       - name: Exchange GitHub OIDC identity for scoped AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
           role-to-assume: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_AWS_ROLE_ARN || vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_AWS_REGION || vars.RUNNER_E2E_HISTORY_AWS_REGION }}
