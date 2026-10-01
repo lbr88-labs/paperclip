@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const workflow = readFileSync(new URL("../../workflows/docker.yml", import.meta.url), "utf8");
-const job = workflow.split("  promote_canary_channel:\n")[1];
+const job = workflow.split("  promote_canary_channel:\n")[1].split(/\n  [a-zA-Z][\w-]*:\n/)[0];
 const script = job.split("        run: |\n")[1].split("\n").map(line => line.replace(/^ {10}/, "")).join("\n");
 const sha = "a".repeat(40);
 
