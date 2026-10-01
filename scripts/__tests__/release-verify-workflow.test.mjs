@@ -15,6 +15,14 @@ function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
 
+// Scope assertions to one YAML job so names, comments, permissions and key
+// ordering cannot invalidate wiring checks or match another job accidentally.
+function workflowJob(workflow, jobId) {
+  const job = workflow.match(new RegExp(`^  ${jobId}:\\n([\\s\\S]*?)(?=^  [a-zA-Z_][a-zA-Z0-9_-]*:|$(?![\\s\\S]))`, "m"));
+  assert.ok(job, `workflow must define job ${jobId}`);
+  return job[1];
+}
+
 test("chaos verification isolates callers that verify the same source commit", () => {
   const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
   const group = chaosWorkflow.match(/^  group: (.+)$/m)?.[1];
@@ -38,23 +46,23 @@ test("chaos verification isolates callers that verify the same source commit", (
 
 test("canary reuses exact-source proof while stable keeps full verification", () => {
   const releaseWorkflow = readWorkflow("release.yml");
-  const canary = releaseWorkflow.split("  verify_canary:\n")[1].split("\n  publish_canary:")[0];
+  const canary = workflowJob(releaseWorkflow, "verify_canary");
   assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
   assert.match(canary, /actions: read/);
   assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
   assert.doesNotMatch(canary, /release-verify\.yml|continue-on-error|always\(\)/);
-  assert.match(releaseWorkflow, /publish_canary:\n\s+if: github\.event_name == 'push'\n\s+needs: verify_canary/);
-  // The stable lane is gated on the stable channel since the nightly lane
-  // was added; a `needs:` line (for example a preflight job) may sit between
-  // the gate and the delegation.
-  // The stable preflight resolves source_ref to an immutable SHA exactly
-  // once; verification must consume that pin, not re-resolve the ref.
-  assert.match(
-    releaseWorkflow,
-    /verify_stable:\n\s+if: github\.event_name == 'workflow_dispatch' && inputs\.channel == 'stable'\n(?:\s+needs: [^\n]+\n)?\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ needs\.preflight_stable\.outputs\.sha \}\}/,
-  );
+  const publishCanary = workflowJob(releaseWorkflow, "publish_canary");
+  assert.match(publishCanary, /^    if: github\.event_name == 'push'$/m);
+  assert.match(publishCanary, /^    needs: verify_canary$/m);
+  // Verification must consume the immutable SHA resolved by preflight.
+  const stable = workflowJob(releaseWorkflow, "verify_stable");
+  assert.match(stable, /^    if: github\.event_name == 'workflow_dispatch' && inputs\.channel == 'stable'$/m);
+  assert.match(stable, /^    needs: preflight_stable$/m);
+  assert.match(stable, /^    uses: \.\/\.github\/workflows\/release-verify\.yml(?:[ \t]+#.*)?$/m);
+  assert.match(stable, /^    with:$/m);
+  assert.match(stable, /^      ref: \$\{\{ needs\.preflight_stable\.outputs\.sha \}\}$/m);
   assert.doesNotMatch(
     releaseWorkflow,
     /verify_(?:canary|stable):[\s\S]*?pnpm test:run(?:\n|$)/,
@@ -105,10 +113,10 @@ test("candidate-branch betas are validated and fully verified before publish", (
   // Candidate heads are new commits: selection must pin the naming
   // convention and publication must be gated on full verification.
   assert.match(releaseWorkflow, /candidate\/beta-\*\)/);
-  assert.match(
-    releaseWorkflow,
-    /verify_beta_candidate:\n\s+needs: select_beta\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml/,
-  );
+  const candidate = workflowJob(releaseWorkflow, "verify_beta_candidate");
+  assert.match(candidate, /^    needs: select_beta$/m);
+  assert.match(candidate, /^    if: needs\.select_beta\.outputs\.mode == 'candidate'$/m);
+  assert.match(candidate, /^    uses: \.\/\.github\/workflows\/release-verify\.yml(?:[ \t]+#.*)?$/m);
   assert.match(
     releaseWorkflow,
     /needs\.verify_beta_candidate\.result == 'success'/,
@@ -122,10 +130,9 @@ test("post-publish beta smoke survives the skipped candidate-verification ancest
   // skipped on promote-mode betas. An `if:` without a status-check function
   // gets an implicit success() that evaluates that chain transitively and
   // silently skips the smoke. The condition must stay explicit.
-  assert.match(
-    releaseWorkflow,
-    /smoke_beta:\n\s+needs: publish_beta\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_beta\.result == 'success' && !inputs\.dry_run \}\}/,
-  );
+  const smoke = workflowJob(releaseWorkflow, "smoke_beta");
+  assert.match(smoke, /^    needs: publish_beta$/m);
+  assert.match(smoke, /^    if: \$\{\{ !cancelled\(\) && needs\.publish_beta\.result == 'success' && !inputs\.dry_run \}\}$/m);
 });
 
 test("published canaries are gated by the exact-version onboarding browser smoke", () => {
@@ -135,10 +142,9 @@ test("published canaries are gated by the exact-version onboarding browser smoke
     releaseWorkflow,
     /publish_canary:[\s\S]*?outputs:\n\s+canary_version: \$\{\{ steps\.canary_tag\.outputs\.version \}\}/,
   );
-  assert.match(
-    releaseWorkflow,
-    /smoke_canary_onboarding:\n\s+needs: publish_canary\n\s+if: needs\.publish_canary\.result == 'success'/,
-  );
+  const smoke = workflowJob(releaseWorkflow, "smoke_canary_onboarding");
+  assert.match(smoke, /^    needs: publish_canary$/m);
+  assert.match(smoke, /^    if: needs\.publish_canary\.result == 'success'$/m);
   assert.match(
     releaseWorkflow,
     /PAPERCLIPAI_VERSION: \$\{\{ needs\.publish_canary\.outputs\.canary_version \}\}/,
