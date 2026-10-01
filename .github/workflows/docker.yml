@@ -13,6 +13,15 @@ on:
   # the new tag ref instead. The tag mapping below keys off github.ref either
   # way.
   workflow_dispatch:
+    inputs:
+      export_compiled_only:
+        description: Export an existing image's compiled server payload without rebuilding
+        type: boolean
+        default: false
+      source_sha:
+        description: Full source commit of the existing image to export
+        type: string
+        default: ''
 
 # Least privilege: nothing at the workflow level; each job declares exactly
 # the token scopes it uses (checkout needs contents:read, GHCR pushes need
@@ -56,6 +65,7 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
+    if: ${{ !inputs.export_compiled_only }}
     name: Build production image by architecture
     strategy:
       # Independent legs: one architecture failing should still publish
@@ -452,3 +462,45 @@ jobs:
           fi
           docker buildx imagetools create -t "$IMAGE:canary" "$IMAGE:sha-${short}"
           echo "channel tags moved to canary ${current} (sha-${short})"
+
+  export-compiled:
+    name: Export verified compiled payload
+    if: github.event_name == 'workflow_dispatch' && inputs.export_compiled_only
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: read # Read the existing image; this job cannot publish it.
+    steps:
+      - name: Extract compiled files from the verified source image
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          REPOSITORY: ${{ github.repository }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full lowercase source SHA is required'; exit 1; }
+          image="ghcr.io/${REPOSITORY,,}:sha-${SOURCE_SHA:0:7}"
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null; if [[ -n "${container:-}" ]]; then docker rm "$container" >/dev/null; fi' EXIT
+          docker pull --platform linux/amd64 "$image"
+          revision="$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          [[ "$revision" == "$SOURCE_SHA" ]] || { echo 'Image source revision does not match'; exit 1; }
+          digest="$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')"
+          container="$(docker create --platform linux/amd64 "$image")"
+          mkdir -p payload/server payload/ui payload/shared payload/db output
+          docker cp "$container:/app/server/dist" payload/server/dist
+          docker cp "$container:/app/ui/dist" payload/ui/dist
+          docker cp "$container:/app/packages/shared/dist" payload/shared/dist
+          docker cp "$container:/app/packages/db/dist" payload/db/dist
+          docker cp "$container:/app/packages/db/src/migrations" payload/db/migrations
+          jq -n --arg sourceSha "$SOURCE_SHA" --arg image "$image" --arg digest "$digest" --arg runId "$GITHUB_RUN_ID" '{sourceSha:$sourceSha,image:$image,digest:$digest,runId:$runId}' > output/provenance.json
+          tar -czf output/compiled-payload.tar.gz -C payload .
+          (cd output && sha256sum compiled-payload.tar.gz > compiled-payload.sha256)
+      - name: Upload compiled deployment payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: compiled-payload-${{ inputs.source_sha }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 7
