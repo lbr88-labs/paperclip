@@ -1,12 +1,15 @@
 import { Router, type Request } from "express";
+import { z } from "zod";
 import { companies, type Db } from "@paperclipai/db";
+import type { TaskDrainDelegationAction } from "@paperclipai/db/schema/task_drain_delegations";
 import {
+  createTaskDrainDelegationSchema,
   patchInstanceSettingsSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceGeneralSettingsSchema,
   startTaskDrainRequestSchema,
 } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { badRequest, forbidden, notFound } from "../errors.js";
 import {
   cloudTenantPrimaryCompanyId,
   getCloudStackContext,
@@ -26,6 +29,8 @@ import {
 import { environmentService } from "../services/environments.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
+import { taskDrainDelegationService } from "../services/task-drain-delegation.js";
+import { resolvePaperclipInstanceId } from "../home-paths.js";
 
 function sameJsonValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -122,6 +127,43 @@ export function instanceSettingsRoutes(db: Db) {
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
   const heartbeat = heartbeatService(db);
+  const delegations = taskDrainDelegationService(db);
+
+  function assertDelegationManager(req: Request) {
+    if (req.actor.type !== "board" || !req.actor.isInstanceAdmin ||
+      req.actor.source !== "session" || !req.actor.userId) {
+      throw forbidden("Signed-in instance admin access required");
+    }
+  }
+
+  async function taskDrainAccess(req: Request, action: TaskDrainDelegationAction, ttlMs?: number | null) {
+    if (req.actor.type === "board") {
+      if (action === "read") {
+        assertBoardOrgAccess(req);
+        return { grantId: null as string | null, grantExpiresAt: null as Date | null, companyIds: [] as string[] };
+      }
+      assertCanManageInstanceSettings(req);
+      return { grantId: null as string | null, grantExpiresAt: null as Date | null, companyIds: await svc.listCompanyIds() };
+    }
+    if (req.actor.type !== "agent" || req.actor.source !== "agent_jwt" ||
+      !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
+      throw forbidden("Task-drain delegation required");
+    }
+    const companyIds = await svc.listCompanyIds();
+    const instanceSettingsId = (await svc.get()).id;
+    const grant = await delegations.authorize({
+      agentId: req.actor.agentId,
+      companyId: req.actor.companyId,
+      instanceId: resolvePaperclipInstanceId(),
+      instanceSettingsId,
+      companyIds,
+      runId: req.actor.runId,
+      action,
+      ttlMs,
+    });
+    if (!grant) throw forbidden("Task-drain delegation required");
+    return { grantId: grant.id, grantExpiresAt: grant.expiresAt, companyIds };
+  }
 
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);
@@ -295,8 +337,59 @@ export function instanceSettingsRoutes(db: Db) {
     },
   );
 
+  router.get("/instance/task-drain/delegations/target", async (req, res) => {
+    assertDelegationManager(req);
+    const companyIds = await svc.listCompanyIds();
+    res.json({
+      instanceId: resolvePaperclipInstanceId(),
+      instanceSettingsId: (await svc.get()).id,
+      companyIds,
+      delegationSupported: companyIds.length === 1,
+    });
+  });
+
+  router.get("/instance/task-drain/delegations", async (req, res) => {
+    assertDelegationManager(req);
+    res.json(await delegations.list());
+  });
+
+  router.post("/instance/task-drain/delegations", validate(createTaskDrainDelegationSchema), async (req, res) => {
+    assertDelegationManager(req);
+    const companyIds = await svc.listCompanyIds();
+    if (companyIds.length !== 1 || companyIds[0] !== req.body.companyId ||
+      req.body.instanceId !== resolvePaperclipInstanceId() ||
+      (await svc.get()).id !== req.body.instanceSettingsId) {
+      throw forbidden("Task-drain delegation requires this single-company instance");
+    }
+    const expiresAt = new Date(req.body.expiresAt);
+    if (expiresAt.getTime() <= Date.now() + 60_000 || expiresAt.getTime() > Date.now() + 86_400_000) {
+      throw badRequest("Delegation expiry must be between one minute and 24 hours from now");
+    }
+    const grant = await delegations.create({ ...req.body, expiresAt, issuedByUserId: req.actor.userId! });
+    res.status(201).json(grant);
+  });
+
+  router.delete("/instance/task-drain/delegations/:grantId", async (req, res) => {
+    assertDelegationManager(req);
+    const id = String(req.params.grantId);
+    if (!z.string().uuid().safeParse(id).success) throw badRequest("Invalid delegation ID");
+    const grant = await withTaskDrainTransition(() => delegations.revoke(id, req.actor.userId!));
+    if (!grant) throw notFound("Active task-drain delegation not found");
+    res.json(grant);
+  });
+
   router.get("/instance/task-drain", async (req, res) => {
-    assertBoardOrgAccess(req);
+    const access = await taskDrainAccess(req, "read");
+    if (access.grantId) {
+      const actor = getActorInfo(req);
+      const postCommitActivityPublications: ActivityPublication[] = [];
+      await logActivity(db, { companyId: req.actor.companyId!, actorType: actor.actorType,
+        actorId: actor.actorId, agentId: actor.agentId, runId: actor.runId,
+        action: "instance.task_drain.delegated_read", entityType: "task_drain_delegation",
+        entityId: access.grantId, details: { instanceSettingsId: (await svc.get()).id } },
+      postCommitActivityPublications);
+      publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.delegated_read");
+    }
     res.json(heartbeat.getTaskDrainStatus());
   });
 
@@ -304,10 +397,9 @@ export function instanceSettingsRoutes(db: Db) {
     "/instance/task-drain",
     validate(startTaskDrainRequestSchema),
     async (req, res) => {
-      assertCanManageInstanceSettings(req);
-      const actor = getActorInfo(req);
-      const companyIds = await svc.listCompanyIds();
       const ttlMs = req.body.ttlMs ?? null;
+      const boardAccess = req.actor.type === "board" ? await taskDrainAccess(req, "start", ttlMs) : null;
+      const actor = getActorInfo(req);
       // The whole read-audit-apply sequence runs as one queued transition
       // (see withTaskDrainTransition above), so an overlapping start or
       // stop cannot commit its audit row, or apply its live state, out of
@@ -315,7 +407,13 @@ export function instanceSettingsRoutes(db: Db) {
       // startedAt reflects the moment this request actually took effect,
       // not the moment it arrived and was queued behind another transition.
       const drain = await withTaskDrainTransition(async () => {
+        const access = boardAccess ?? await taskDrainAccess(req, "start", ttlMs);
+        const companyIds = access.companyIds;
         const computed = heartbeat.computeTaskDrain({ ttlMs });
+        if (access.grantExpiresAt && (!computed.expiresAt ||
+          new Date(computed.expiresAt).getTime() > access.grantExpiresAt.getTime())) {
+          throw forbidden("Task drain would outlive its delegation");
+        }
         // One transaction for every company's audit row, so a write that
         // succeeds for one company and fails for another never leaves a
         // partial activity history behind — either every company gets the
@@ -339,6 +437,7 @@ export function instanceSettingsRoutes(db: Db) {
                 details: {
                   startedAt: computed.startedAt,
                   expiresAt: computed.expiresAt,
+                  delegationId: access.grantId,
                 },
               }, postCommitActivityPublications),
             ),
@@ -358,9 +457,8 @@ export function instanceSettingsRoutes(db: Db) {
   );
 
   router.delete("/instance/task-drain", async (req, res) => {
-    assertCanManageInstanceSettings(req);
+    const boardAccess = req.actor.type === "board" ? await taskDrainAccess(req, "stop") : null;
     const actor = getActorInfo(req);
-    const companyIds = await svc.listCompanyIds();
     // See the POST handler above for why the whole read-audit-apply
     // sequence runs inside withTaskDrainTransition: it queues this stop
     // behind any transition already in flight, so it cannot read a status
@@ -368,6 +466,8 @@ export function instanceSettingsRoutes(db: Db) {
     // its live-state mutation always land in the same order as every other
     // queued transition.
     const wasActive = await withTaskDrainTransition(async () => {
+      const access = boardAccess ?? await taskDrainAccess(req, "stop");
+      const companyIds = access.companyIds;
       const priorStatus = heartbeat.getTaskDrainStatus();
       // Read wasActive once, here, and use this same value for the audit
       // detail and the response body below. A TTL that expires between two
@@ -391,6 +491,7 @@ export function instanceSettingsRoutes(db: Db) {
               entityId: "default",
               details: {
                 wasActive,
+                delegationId: access.grantId,
               },
             }, postCommitActivityPublications),
           ),

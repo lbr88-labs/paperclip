@@ -1788,6 +1788,8 @@ export {
   MAX_TASK_DRAIN_TTL_MS,
   startTaskDrainRequestSchema,
   type StartTaskDrainRequest,
+  createTaskDrainDelegationSchema,
+  type CreateTaskDrainDelegation,
 } from "./validators/instance.js";
 
 export {
