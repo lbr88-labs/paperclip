@@ -4480,6 +4480,14 @@ export function agentRoutes(
     }
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
     const rawHireAdapterConfig = (hireInput.adapterConfig ?? {}) as Record<string, unknown>;
+    // Validate the exact executable string that the OpenCode adapter will run.
+    // A trimmed check would admit padded paths without changing the saved value.
+    if (hireInput.adapterType === "opencode_local") {
+      const command = rawHireAdapterConfig.command;
+      if (typeof command !== "string" || command !== command.trim() || !path.isAbsolute(command)) {
+        throw unprocessable("opencode_local hires require an unpadded absolute adapterConfig.command");
+      }
+    }
     assertProviderTraceSettingTransition(req, hireInput.runtimeConfig);
     await assertFreshPaperclipRunnerProvider(
       companyId,
