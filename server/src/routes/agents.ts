@@ -86,6 +86,7 @@ import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../s
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import { assertAuthenticated, assertBoard, assertCompanyAccess, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
+import { isStatusReadKeyActor, projectStatusAgent } from "../status-read.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -4009,6 +4010,11 @@ export function agentRoutes(
   router.get("/companies/:companyId/agents", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (isStatusReadKeyActor(req)) {
+      const agents = await svc.list(companyId);
+      res.json(agents.map(projectStatusAgent));
+      return;
+    }
     const unsupportedQueryParams = Object.keys(req.query).sort();
     if (unsupportedQueryParams.length > 0) {
       res.status(400).json({

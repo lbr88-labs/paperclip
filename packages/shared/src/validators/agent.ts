@@ -188,10 +188,16 @@ export const skillTestAgentKeyScopeSchema = z.object({
   issueId: z.string().guid(),
 }).strict();
 
+export const statusReadAgentKeyScopeSchema = z.object({
+  kind: z.literal("status_read"),
+  companyId: z.string().guid(),
+}).strict();
+
 export const agentApiKeyScopeSchema = z.union([
   standardAgentKeyScopeSchema,
   taskBridgeAgentKeyScopeSchema,
   skillTestAgentKeyScopeSchema,
+  statusReadAgentKeyScopeSchema,
 ]);
 
 export type AgentApiKeyScope = z.infer<typeof agentApiKeyScopeSchema>;
