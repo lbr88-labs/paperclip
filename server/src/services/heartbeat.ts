@@ -19908,12 +19908,36 @@ export function heartbeatService(
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
-        if (claimed) claimedRuns.push(claimed);
-      }
-      if (claimedRuns.length === 0) return [];
-
-      for (const claimedRun of claimedRuns) {
+        let claimedRun: typeof heartbeatRuns.$inferSelect | null;
+        try {
+          claimedRun = await claimQueuedRun(queuedRun, companyAgents);
+        } catch (error) {
+          if (!(error instanceof HttpError && error.status === 403 &&
+            error.message === "Queued-message interrupt authority is unavailable")) throw error;
+          // The receipt cannot authorize this run. Fail this one queued run so
+          // it cannot abort the agent's entire queue on every recovery tick.
+          const failed = await setRunStatusFromLive(queuedRun.id, "failed", ["queued"], {
+            error: error.message,
+            errorCode: "queued_comment_interrupt_authority_unavailable",
+            finishedAt: new Date(),
+          });
+          if (failed.updated && failed.run) {
+            await setWakeupStatus(queuedRun.wakeupRequestId, "failed", {
+              error: error.message,
+              finishedAt: failed.run.finishedAt ?? new Date(),
+            });
+            await appendRunEvent(failed.run, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: "error",
+              message: "Queued-message interrupt authority failed before execution",
+            });
+          }
+          logger.warn({ runId: queuedRun.id, agentId }, "queued run failed interrupt authority check");
+          continue;
+        }
+        if (!claimedRun) continue;
+        claimedRuns.push(claimedRun);
         const execution = executeRun(claimedRun.id).catch((err) => {
           logger.error(
             { err, runId: claimedRun.id },
@@ -27976,9 +28000,16 @@ export function heartbeatService(
                 )).then(rows => rows[0] ?? null)
               : null;
           const pendingComments =
-            !isConversation(issue) && opts.allowRunCoalescing !== false &&
-            !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
-              ? await tx
+            opts.queuedCommentInterruptId && isConversation(issue)
+              ? await tx.select().from(agentWakeupRequests).where(and(
+                  eq(agentWakeupRequests.id, opts.queuedCommentInterruptId),
+                  eq(agentWakeupRequests.companyId, issue.companyId),
+                  eq(agentWakeupRequests.agentId, agentId),
+                  eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                ))
+              : !isConversation(issue) && opts.allowRunCoalescing !== false &&
+                  !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
+                ? await tx
                   .select()
                   .from(agentWakeupRequests)
                   .where(
@@ -27990,7 +28021,7 @@ export function heartbeatService(
                     ),
                   )
                   .orderBy(asc(agentWakeupRequests.requestedAt))
-              : [];
+                : [];
           const adoptedComments = pendingComments.filter((wake) => {
             if (wake.id === opts.queuedCommentInterruptId || wake.id === opts.queuedCommentRequestId) return true;
             const deferredPayload = parseObject(wake.payload);
