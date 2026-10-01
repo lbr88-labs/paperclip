@@ -133,6 +133,10 @@ test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
   assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.73.0");
   assert.equal(runnerPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
+  const codexAdapterPackage = JSON.parse(
+    readFileSync(new URL("../packages/adapters/codex-local/package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(codexAdapterPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
   for (const callback of [
     "spawnEnvironment", "spawnCwd", "spawnAgent", "isPlainStringEnvironment",
     "onAgentSpawn", "onAgentStderr", "onAgentExit",
@@ -140,6 +144,15 @@ test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
   ]) assert.match(acpxRuntimePatch, new RegExp(callback));
   assert.match(claudeAcpPatch, /usage: \{/);
   assert.match(claudeAcpPatch, /cache_creation_input_tokens/);
+});
+
+test("the npm CLI carries the exact Codex ACP patch for managed installs", () => {
+  const cliPackage = JSON.parse(
+    readFileSync(new URL("../cli/package.json", import.meta.url), "utf8"),
+  );
+  assert.ok(cliPackage.files.includes("patches"));
+  assert.match(buildNpmScript, /mkdir -p "\$CLI_DIR\/patches"/);
+  assert.match(buildNpmScript, /codex-acp@1\.6\.2\.patch/);
 });
 
 test("published packages preserve the patched embedded-postgres runtime", () => {

@@ -100,6 +100,15 @@ filesystem/network confinement and in-place Codex workspaces require explicit
 CLI selection. CLI sandbox defaults and explicit restrictions are described in
 the adapter configuration documentation.
 
+Managed Codex ACP installs pin `@agentclientprotocol/codex-acp` 1.6.2 and
+`@openai/codex` 0.159.1. Git-source and npm installs apply and verify the ACP
+patch, package versions, and shared Codex runtime path before activation and
+reuse. The Codex 0.159.1 app-server catalog includes `gpt-6.1-sol`. Paperclip
+allows `low`, `medium`, `high`, `xhigh`, and `max` for this model. It omits
+`none`, `minimal`, `ultra`, and Fast mode. This proves package and catalog
+compatibility; an authenticated subscription-backed ACP turn still requires a
+usable Codex subscription and separate verification.
+
 ## Managed Install Layout
 
 Managed code is separate from instance data:

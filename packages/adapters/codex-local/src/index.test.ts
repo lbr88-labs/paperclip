@@ -4,6 +4,7 @@ import {
   DEFAULT_CODEX_LOCAL_MODEL,
   isCodexLocalFastModeSupported,
   models,
+  normalizeCodexLocalReasoningEffort,
   normalizeCodexModel,
 } from "./index.js";
 
@@ -25,7 +26,7 @@ describe("codex local adapter metadata", () => {
     expect(modelIds).toContain("gpt-5.6-luna");
     expect(modelIds).not.toContain("gpt-5.6");
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
-    expect(isCodexLocalFastModeSupported("gpt-6.1-sol")).toBe(true);
+    expect(isCodexLocalFastModeSupported("gpt-6.1-sol")).toBe(false);
     expect(isCodexLocalFastModeSupported("gpt-6-astra")).toBe(true);
     expect(isCodexLocalFastModeSupported("gpt-6-sol")).toBe(true);
     expect(modelIds).not.toContain("gpt-5.3-codex");
@@ -40,6 +41,25 @@ describe("codex local adapter metadata", () => {
       "xhigh",
       "max",
     ]);
+  });
+
+  it.each(["low", "medium", "high", "xhigh", "max"])(
+    "retains the supported GPT-6.1 Sol effort %s",
+    (effort) => {
+      expect(normalizeCodexLocalReasoningEffort("gpt-6.1-sol", effort)).toBe(effort);
+    },
+  );
+
+  it.each(["none", "minimal", "ultra"])(
+    "omits unsupported GPT-6.1 Sol effort %s",
+    (effort) => {
+      expect(normalizeCodexLocalReasoningEffort("gpt-6.1-sol", effort)).toBe("");
+    },
+  );
+
+  it("keeps other model and manual effort strings unchanged", () => {
+    expect(normalizeCodexLocalReasoningEffort("gpt-6-sol", "ultra")).toBe("ultra");
+    expect(normalizeCodexLocalReasoningEffort("custom-model", "max")).toBe("max");
   });
 
   it.each(["gpt-6-astra", "gpt-6-sol", " gpt-6-sol ", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6"])("uses the reasoning efforts advertised for %s", (model) => {

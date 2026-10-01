@@ -21,17 +21,22 @@ const config = {
 } as PaperclipConfig;
 
 let previousPaperclipHome: string | undefined;
+let previousPaperclipInstanceId: string | undefined;
 let previousServiceManaged: string | undefined;
 
 beforeEach(() => {
   previousPaperclipHome = process.env.PAPERCLIP_HOME;
+  previousPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
   previousServiceManaged = process.env.PAPERCLIP_SERVICE_MANAGED;
   process.env.PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-service-restart-"));
+  process.env.PAPERCLIP_INSTANCE_ID = "default";
 });
 
 afterEach(() => {
   if (previousPaperclipHome === undefined) delete process.env.PAPERCLIP_HOME;
   else process.env.PAPERCLIP_HOME = previousPaperclipHome;
+  if (previousPaperclipInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+  else process.env.PAPERCLIP_INSTANCE_ID = previousPaperclipInstanceId;
   if (previousServiceManaged === undefined) delete process.env.PAPERCLIP_SERVICE_MANAGED;
   else process.env.PAPERCLIP_SERVICE_MANAGED = previousServiceManaged;
 });

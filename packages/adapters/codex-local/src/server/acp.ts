@@ -39,7 +39,11 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
-import { normalizeCodexModel } from "../index.js";
+import {
+  isCodexLocalFastModeSupported,
+  normalizeCodexLocalReasoningEffort,
+  normalizeCodexModel,
+} from "../index.js";
 import { classifyCodexAuthRefreshFailure, extractCodexRetryNotBefore } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
@@ -139,6 +143,24 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
   const normalizedModel = normalizeCodexModel(
     typeof config.model === "string" ? config.model : "",
   );
+  // ACPX accepts four legacy aliases for this value. Normalize their precedence
+  // here and remove every alias so an unsupported value cannot bypass the
+  // model-specific limit through reasoningEffort, thinkingEffort, or effort.
+  const requestedReasoningEffort = firstNonEmptyString(
+    config.modelReasoningEffort,
+    config.reasoningEffort,
+    config.thinkingEffort,
+    config.effort,
+  );
+  const normalizedReasoningEffort = normalizeCodexLocalReasoningEffort(
+    normalizedModel,
+    requestedReasoningEffort,
+  );
+  const normalizedConfig = { ...config };
+  delete normalizedConfig.modelReasoningEffort;
+  delete normalizedConfig.reasoningEffort;
+  delete normalizedConfig.thinkingEffort;
+  delete normalizedConfig.effort;
 
   const env = parseObject(config.env);
   let networkAccess = env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS !== "false";
@@ -157,7 +179,13 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
   }
 
   return {
-    ...config,
+    ...normalizedConfig,
+    ...(normalizedReasoningEffort
+      ? { modelReasoningEffort: normalizedReasoningEffort }
+      : {}),
+    ...(typeof config.fastMode === "boolean"
+      ? { fastMode: config.fastMode && isCodexLocalFastModeSupported(normalizedModel) }
+      : {}),
     env: { ...env, PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: String(networkAccess) },
     agent: "codex",
     mode,

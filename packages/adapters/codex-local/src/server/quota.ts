@@ -470,7 +470,10 @@ type PendingRequest = {
 class CodexRpcClient {
   private proc = spawn(
     "codex",
-    ["-s", "read-only", "-a", "untrusted", "app-server"],
+    // This client only performs noninteractive account/rate-limit RPCs. Keep
+    // the OS sandbox explicitly read-only and disable approval prompts so the
+    // app-server cannot wait for an approval handler that this client lacks.
+    ["-s", "read-only", "-a", "never", "app-server"],
     { stdio: ["pipe", "pipe", "pipe"], env: process.env },
   );
 

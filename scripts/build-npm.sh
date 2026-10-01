@@ -55,6 +55,12 @@ await esbuild.build(config);
 
 chmod +x dist/index.js
 
+# The managed installer needs the exact patched ACP runtime source when it
+# stages a versioned npm payload. Keep this alongside the bundled CLI entrypoint.
+mkdir -p "$CLI_DIR/patches"
+cp "$REPO_ROOT/patches/@agentclientprotocol__codex-acp@1.6.2.patch" \
+  "$CLI_DIR/patches/@agentclientprotocol__codex-acp@1.6.2.patch"
+
 # ── Step 4: Validate bundled entrypoint syntax ─────────────────────────────────
 echo "  [4/6] Verifying bundled entrypoint syntax..."
 node --check "$DIST_DIR/index.js"
