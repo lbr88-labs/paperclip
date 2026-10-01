@@ -2356,7 +2356,9 @@ function IssueChatAssistantMessage({
   const waitingText =
     typeof custom.waitingText === "string" ? custom.waitingText : "";
   const isRunning =
-    message.role === "assistant" && message.status?.type === "running";
+    message.role === "assistant" &&
+    message.status?.type === "running" &&
+    runStatus !== "queued";
   const runHref =
     runId && runAgentId ? `/agents/${runAgentId}/runs/${runId}` : null;
   const canStopRun =
@@ -2370,7 +2372,7 @@ function IssueChatAssistantMessage({
     (p) => p.type === "reasoning" || p.type === "tool-call",
   );
   const deleted = Boolean(custom.deletedAt);
-  const isFoldable = !isRunning && !!chainOfThoughtLabel;
+  const isFoldable = !isRunning && runStatus !== "queued" && !!chainOfThoughtLabel;
   const [folded, setFolded] = useState(isFoldable);
   const [prevFoldKey, setPrevFoldKey] = useState({
     messageId: message.id,
@@ -2691,6 +2693,14 @@ function IssueChatAssistantMessage({
                   Running
                 </Badge>
               ) : null}
+              {runStatus === "queued" ? (
+                <Badge
+                  variant="outline"
+                  className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)"
+                >
+                  Queued
+                </Badge>
+              ) : null}
             </div>
           )}
 
@@ -2709,9 +2719,9 @@ function IssueChatAssistantMessage({
                         {agentId ? (
                           <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId } : undefined} size={16} />
                         ) : (
-                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
+                          runStatus === "queued" ? null : <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
                         )}
-                        <span className="shimmer-text">{waitingText}</span>
+                        <span className={isRunning ? "shimmer-text" : undefined}>{waitingText}</span>
                       </span>
                     </div>
                     <IssueChatLiveRunStatusLine

@@ -164,6 +164,11 @@ export async function admitExplicitNativeContinuation(input: {
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
+    // The scheduler rejects an invalid queued interrupt before dispatch. Its
+    // terminal failure is the stop proof: no adapter or process was started.
+    const rejectedBeforeDispatch = run.status === "failed" && !run.startedAt &&
+      !run.processStartedAt && !run.processPid && !run.processGroupId &&
+      run.errorCode === "queued_comment_interrupt_authority_unavailable";
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       isConversationAdapter(agent.adapterType);
@@ -231,7 +236,7 @@ export async function admitExplicitNativeContinuation(input: {
       }))) return null;
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
-      if (!unusedAdmission && !cancelledStartup) {
+      if (!unusedAdmission && !cancelledStartup && !rejectedBeforeDispatch) {
         // A missing process identity is not evidence that a provider exited.
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&

@@ -84,8 +84,12 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
-  const semanticLabel = terminal
+  const label = terminal
+    ? failed ? "Stopped" : "Worked"
+    : status === "queued" ? "Queued" : "Working";
+  const semanticLabel = status === "queued"
+    ? elapsed ? `Queued for ${elapsed}` : "Queued"
+    : terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
@@ -109,6 +113,18 @@ function RunnerTurnStatus({
 
 function RunnerCurrentActivityTail({ status }: { status: string }) {
   if (isTerminalRunStatus(status)) return null;
+  if (status === "queued") {
+    return (
+      <div
+        className="mt-2 flex min-h-8 min-w-0 items-center px-1 py-1 text-xs text-muted-foreground"
+        data-testid="task-chat-current-activity"
+        data-turn-position="tail"
+        role="status"
+      >
+        Waiting to start...
+      </div>
+    );
+  }
   return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
     <span className="shimmer-text shimmer-text-muted" aria-live="polite" data-testid="task-chat-current-activity-label">Thinking</span>
   </div>;

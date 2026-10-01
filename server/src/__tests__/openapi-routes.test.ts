@@ -226,6 +226,34 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents task drain board access and scoped CEO run delegation", () => {
+    const { spec } = loadSpecRoutes();
+    for (const [method, action] of [["get", "read"], ["post", "start"], ["delete", "stop"]]) {
+      const operation = spec.paths["/api/instance/task-drain"][method];
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }, { AgentRunAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({
+        actor: "board_or_delegated_agent", delegatedAgent: { role: "ceo", heartbeatBound: true, grantRequired: true, action },
+      });
+    }
+  });
+
+  it("documents all delegation management routes as signed-in instance-admin only", () => {
+    const { spec } = loadSpecRoutes();
+    const operations = [
+      spec.paths["/api/instance/task-drain/delegations/target"].get,
+      spec.paths["/api/instance/task-drain/delegations"].get,
+      spec.paths["/api/instance/task-drain/delegations"].post,
+      spec.paths["/api/instance/task-drain/delegations/{grantId}"].delete,
+    ];
+    for (const operation of operations) {
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({
+        actor: "board", instanceAdmin: true, signedInSession: true,
+      });
+      expect(operation.summary).toContain("signed-in instance admin only");
+    }
+  });
+
   it("documents personal board-only announcements and private responses", () => {
     const { spec } = loadSpecRoutes();
     const current = spec.paths["/api/announcements/current"].get;

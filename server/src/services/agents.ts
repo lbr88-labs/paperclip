@@ -1243,6 +1243,9 @@ export function agentService(db: Db) {
       if (existing.status === "terminated") {
         throw conflict("Cannot create keys for terminated agents");
       }
+      if (scope.kind === "status_read" && scope.companyId !== existing.companyId) {
+        throw unprocessable("Status-read key company must match the agent company");
+      }
 
       const token = createToken();
       const keyHash = hashToken(token);

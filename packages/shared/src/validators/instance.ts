@@ -129,6 +129,18 @@ export const startTaskDrainRequestSchema = z.object({
   ttlMs: z.number().int().positive().max(MAX_TASK_DRAIN_TTL_MS).nullable().optional(),
 }).strict();
 
+export const createTaskDrainDelegationSchema = z.object({
+  agentId: z.string().uuid(),
+  companyId: z.string().uuid(),
+  instanceId: z.string().min(1).max(128),
+  instanceSettingsId: z.string().uuid(),
+  actions: z.array(z.enum(["read", "start", "stop"])).min(1).max(3).refine(
+    (actions) => new Set(actions).size === actions.length,
+    "Duplicate actions are not allowed",
+  ),
+  expiresAt: z.string().datetime({ offset: true }),
+}).strict();
+
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 // The patch schema removes each default so an absent key stays absent. Declare
 // the type from the full settings type, so every field keeps its precise type.
@@ -142,6 +154,7 @@ export type PatchInstanceExperimentalSettings = Partial<
 >;
 export type PatchInstanceSettings = z.infer<typeof patchInstanceSettingsSchema>;
 export type StartTaskDrainRequest = z.infer<typeof startTaskDrainRequestSchema>;
+export type CreateTaskDrainDelegation = z.infer<typeof createTaskDrainDelegationSchema>;
 
 export const instanceSettingsSchema = z.object({
   id: z.string().guid(),

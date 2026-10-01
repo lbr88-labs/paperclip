@@ -235,4 +235,34 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
     expect(secondRunHire.body.idempotent).toBeUndefined();
     expect(secondRunHire.body.agent?.name).toBe("Sam 2");
   });
+  it("requires an exact absolute OpenCode command before creating an agent or approval", async () => {
+    const { company, hiringAgent, run } = await seedHiringFixture(db);
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, company.id));
+    const app = createApp(db, agentActor(company.id, hiringAgent.id, run.id));
+    const base = { name: "OpenCode Engineer", role: "engineer", adapterType: "opencode_local" };
+
+    for (const adapterConfig of [
+      {},
+      { command: "opencode" },
+      { command: " /home/lrasmussen/.local/bin/opencode " },
+    ]) {
+      const rejected = await request(app)
+        .post(`/api/companies/${company.id}/agent-hires`)
+        .send({ ...base, adapterConfig });
+      expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+      expect(await db.select().from(agents).where(eq(agents.companyId, company.id))).toHaveLength(1);
+      expect(await db.select().from(approvals).where(eq(approvals.companyId, company.id))).toHaveLength(0);
+    }
+
+    const accepted = await request(app)
+      .post(`/api/companies/${company.id}/agent-hires`)
+      .send({ ...base, adapterConfig: { command: "/home/lrasmussen/.local/bin/opencode" } });
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(201);
+    expect(accepted.body.agent?.status).toBe("pending_approval");
+    expect(accepted.body.agent?.adapterConfig?.command).toBe("/home/lrasmussen/.local/bin/opencode");
+    expect(accepted.body.approval?.status).toBe("pending");
+    expect(await db.select().from(agents).where(eq(agents.companyId, company.id))).toHaveLength(2);
+    expect(await db.select().from(approvals).where(eq(approvals.companyId, company.id))).toHaveLength(1);
+  });
+
 });

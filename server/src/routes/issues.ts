@@ -1,6 +1,7 @@
 import { queuedInteractionId, readQueuedInteractionResponse, hasQueuedInteractionResponse } from "../services/queued-interaction-response.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
+import { isStatusReadKeyActor, projectStatusIssue } from "../status-read.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { extractIssueReferenceIdentifiers, requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
@@ -7924,6 +7925,15 @@ export function issueRoutes(
     const startedAt = Date.now();
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    if (isStatusReadKeyActor(req)) {
+      const issues = await svc.list(companyId, {
+        status: "todo,in_progress,blocked,in_review",
+        limit: 100,
+        offset: 0,
+      });
+      res.json(issues.map(projectStatusIssue));
+      return;
+    }
     if (isTaskBridgeKeyActor(req)) {
       res.status(403).json({
         error: "Task bridge keys cannot use company-wide issue list APIs",

@@ -91,9 +91,9 @@ describe("TaskChatRunnerTurn", () => {
     },
   });
 
-  it("shows a stable Working header with Thinking at the turn tail", () => {
+  it("shows queued time and waiting until execution starts", () => {
     render([], "queued");
-    expect(container.textContent).toContain("Thinking");
+    expect(container.textContent).toContain("Waiting to start...");
     expect(container.textContent).toContain("Runner");
     expect(
       container.querySelector(
@@ -105,11 +105,7 @@ describe("TaskChatRunnerTurn", () => {
         '[data-testid="task-chat-current-activity-icon"]',
       ),
     ).toBeNull();
-    expect(
-      container.querySelector(
-        '[data-testid="task-chat-current-activity-label"]',
-      )?.textContent,
-    ).toBe("Thinking");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBeNull();
     expect(
       container.querySelector('[data-testid="task-chat-current-activity"]')
         ?.tagName,
@@ -117,7 +113,8 @@ describe("TaskChatRunnerTurn", () => {
     expect(
       container.querySelector('[data-testid="task-chat-turn-status-header"]')
         ?.textContent,
-    ).toContain("Working for");
+    ).toContain("Queued for");
+    expect(container.textContent).not.toContain("Working");
     expect(container.textContent).not.toContain("Waiting for transcript");
     const identity = container.querySelector(
       '[data-testid="task-chat-agent-identity"]',
@@ -139,9 +136,7 @@ describe("TaskChatRunnerTurn", () => {
     );
     expect(activity?.getAttribute("data-turn-position")).toBe("tail");
     expect(activity?.classList.contains("px-1")).toBe(true);
-    expect(activity?.firstElementChild?.hasAttribute("aria-hidden")).toBe(
-      false,
-    );
+    expect(activity?.getAttribute("role")).toBe("status");
   });
 
   it.each(["reconnecting", "retry_scheduled"] as const)(

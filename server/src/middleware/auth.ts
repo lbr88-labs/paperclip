@@ -27,6 +27,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { captureRunIdentity } from "../services/run-identity.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { statusReadRouteAllowed } from "../status-read.js";
 
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
 const CLOUD_TENANT_WRITE_DEBOUNCE_MAX = 1_000;
@@ -478,12 +479,27 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const keyScope = normalizeAgentApiKeyScope(key.scopeConfig);
+    if (key.scopeConfig && typeof key.scopeConfig === "object"
+      && "kind" in key.scopeConfig && key.scopeConfig.kind === "status_read"
+      && keyScope.kind !== "status_read") {
+      next(forbidden("Status-read key scope is invalid"));
+      return;
+    }
+    if (keyScope.kind === "status_read" && (
+      keyScope.companyId !== key.companyId
+      || !statusReadRouteAllowed(req.method, req.originalUrl, keyScope.companyId)
+    )) {
+      next(forbidden("Status-read key cannot access this route"));
+      return;
+    }
+
     req.actor = {
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
-      keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
+      keyScope,
       onBehalfOfUserId: responsibleUserId,
       onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
         companyId: key.companyId,
